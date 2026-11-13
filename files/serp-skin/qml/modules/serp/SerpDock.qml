@@ -334,6 +334,52 @@ PanelWindow {
         }
     }
 
+    // while the menu is open, a click anywhere but the menu and the dock closes it: a see-through
+    // window over the screen that takes the pointer everywhere else (the dock's own window takes it
+    // only on the slab and the menu, so a click on the desktop never reached it)
+    LazyLoader {
+        active: menu.visible
+        PanelWindow {
+            screen: win.modelData
+            anchors {
+                top: true
+                bottom: true
+                left: true
+                right: true
+            }
+            exclusionMode: ExclusionMode.Ignore
+            color: "transparent"
+            WlrLayershell.namespace: "angelos-serpdock-catch"
+            WlrLayershell.layer: WlrLayer.Top
+            WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+            // the dock window stands at the bottom: its items' places on this screen
+            readonly property real top: height - win.height
+            mask: Region {
+                item: catcher
+                Region {
+                    x: menu.x
+                    y: top + menu.y
+                    width: menu.width
+                    height: menu.height
+                    intersection: Intersection.Subtract
+                }
+                Region {
+                    x: slab.x
+                    y: top + slab.y
+                    width: slab.width
+                    height: slab.height
+                    intersection: Intersection.Subtract
+                }
+            }
+            MouseArea {
+                id: catcher
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onPressed: menu.visible = false
+            }
+        }
+    }
+
     // the right-click menu: the app's windows, a new window, pin / unpin, close all
     Rectangle {
         id: menu
