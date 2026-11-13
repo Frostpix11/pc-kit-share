@@ -373,8 +373,11 @@ PanelWindow {
                 property string label
                 width: menuCol.width
                 implicitHeight: Serp.px(30)
+                // left-aligned inside the button's centred box: a row as wide as the item less its
+                // margins, at 0 (the old −width/2 shift counted the centring twice and threw the
+                // labels out to the left of the menu)
                 Row {
-                    x: -mi.width / 2 + Serp.px(18)
+                    width: mi.width - Serp.px(24)
                     spacing: Serp.px(8)
                     SIcon {
                         anchors.verticalCenter: parent.verticalCenter
@@ -383,7 +386,7 @@ PanelWindow {
                     }
                     SText {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: mi.width - Serp.px(48)
+                        width: mi.width - Serp.px(24) - Serp.px(14) - Serp.px(8)
                         text: mi.label
                         size: Serp.px(12)
                     }
