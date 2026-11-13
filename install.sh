@@ -195,6 +195,12 @@ step_serp() {
   say "скин serp: острова, жидкое стекло, панели, свои виджеты"
   ln -sfn "$KIT/serp-skin" ~/serp-skin            # where it is edited: one copy, here
   kit_patch serp-skin
+  # no blur grain under the shell's surfaces (niri's noise is for windows): our own rule in user.kdl
+  local u=~/.config/niri/cfg/user.kdl
+  if ! grep -q "pc-kit serp-skin" "$u" 2>/dev/null; then
+    printf '%s\n' '' '// pc-kit serp-skin: no blur grain under the shell'"'"'s own surfaces (windows keep the noise)' \
+      'layer-rule {' '    match namespace="^angelos-"' '    background-effect {' '        noise 0.0' '    }' '}' >>"$u"
+  fi
   echo "включить: Настройки → Внешний вид → Скин → serp (или: angelos settingsSkin serp)"
 }
 
