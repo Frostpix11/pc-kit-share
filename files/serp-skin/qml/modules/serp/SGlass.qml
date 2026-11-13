@@ -63,7 +63,8 @@ Item {
         radius: root.radius
         color: Serp.ground
         border.width: 1
-        border.color: Serp.line
+        // opaque: the 92 %-clear line let niri's blur noise through — a grainy, broken-looking rim
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))
     }
 
     // ---- the glass ----

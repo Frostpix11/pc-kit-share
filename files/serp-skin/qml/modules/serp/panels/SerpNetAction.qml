@@ -24,7 +24,7 @@ Item {
         radius: height / 2
         color: b.kind === "accent" ? (ma.containsMouse ? Qt.lighter(Serp.accent, 1.08) : Serp.accent) : b.kind === "danger" ? Qt.alpha(Serp.red, ma.containsMouse ? 0.22 : 0.12) : ma.containsMouse ? Serp.surface2 : Serp.surface1
         border.width: b.kind === "plain" ? 1 : 0
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
         Behavior on color {
             ColorAnimation {
                 duration: Serp.quick

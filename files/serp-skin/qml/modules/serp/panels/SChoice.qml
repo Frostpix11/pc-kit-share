@@ -84,7 +84,7 @@ Item {
         radius: Serp.radiusSmall
         color: Serp.base
         border.width: 1
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
         Flickable {
             anchors.fill: parent
             anchors.margins: Serp.px(4)

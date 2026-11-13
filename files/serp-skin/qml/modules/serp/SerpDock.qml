@@ -319,7 +319,7 @@ PanelWindow {
                         radius: Serp.radiusSmall
                         color: Serp.base
                         border.width: 1
-                        border.color: Serp.line
+                        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
                         SText {
                             id: tip
                             anchors.centerIn: parent
@@ -347,7 +347,7 @@ PanelWindow {
         radius: Serp.radius
         color: Serp.base
         border.width: 1
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
         // the pointer leaving the dock area closes it
         onVisibleChanged: if (visible)
             closeTimer.stop()

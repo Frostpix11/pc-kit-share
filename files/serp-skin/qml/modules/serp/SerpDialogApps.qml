@@ -112,7 +112,7 @@ SerpDialog {
                         radius: Serp.radiusSmall
                         color: row.st === "run" ? Qt.alpha(Serp.accent, 0.16) : row.st === "fail" ? Qt.alpha(Serp.red, 0.16) : rowMa.containsMouse ? Serp.surface1 : Qt.alpha(Serp.surface0, 0.8)
                         border.width: 1
-                        border.color: Serp.line
+                        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
                     }
                     // the tick
                     Rectangle {

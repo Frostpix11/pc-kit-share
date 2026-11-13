@@ -161,7 +161,7 @@ Item {
         radius: Math.min(Serp.radius * 1.4, 24)
         color: Serp.ground
         border.width: 1
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
     }
 
     // ---- header: what we are + the Wi-Fi | Bluetooth switch ----
@@ -231,7 +231,7 @@ Item {
             radius: height / 2
             color: Serp.surface0
             border.width: 1
-            border.color: Serp.line
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
             Rectangle {
                 x: Serp.px(3) + (root.isBt ? (seg.width - Serp.px(6)) / 2 : 0)
                 y: Serp.px(3)
@@ -395,7 +395,7 @@ Item {
             radius: Serp.radius
             color: Qt.alpha(Serp.crust, 0.35)
             border.width: 1
-            border.color: Serp.line
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
             clip: true
             opacity: root.ease(root.st(0.05))
             SerpNetOrbit {
@@ -437,7 +437,7 @@ Item {
             radius: Serp.radius
             color: Serp.surface0
             border.width: 1
-            border.color: Serp.line
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
             opacity: root.ease(root.st(0.2))
             transform: Translate {
                 x: (1 - root.ease(root.st(0.2))) * Serp.px(16)
@@ -562,7 +562,7 @@ Item {
         radius: Serp.radius
         color: Serp.surface0
         border.width: 1
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
         opacity: root.ease(root.st(0.35))
         transform: Translate {
             y: (1 - root.ease(root.st(0.35))) * Serp.px(16)

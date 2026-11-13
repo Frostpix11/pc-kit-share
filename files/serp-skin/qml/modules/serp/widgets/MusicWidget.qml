@@ -378,7 +378,7 @@ Item {
                     radius: width / 2
                     color: Serp.ground
                     border.width: 1
-                    border.color: Serp.line
+                    border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
                 }
             }
 
@@ -496,7 +496,7 @@ Item {
             radius: width / 2
             color: tb.big ? (tbMa.containsMouse ? Qt.lighter(Serp.accent, 1.1) : Serp.accent) : tbMa.containsMouse ? Serp.surface1 : Serp.surface0
             border.width: tb.big ? 0 : 1
-            border.color: Serp.line
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
             scale: tbMa.pressed ? 0.94 : 1
             Behavior on color {
                 ColorAnimation {

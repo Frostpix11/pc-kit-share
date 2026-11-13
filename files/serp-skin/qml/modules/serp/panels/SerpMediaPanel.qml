@@ -155,7 +155,7 @@ Item {
         radius: Serp.radius
         color: Qt.alpha(Serp.base, 0.85)
         border.width: 1
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
     }
 
     // ---- nothing plays ----
@@ -433,7 +433,7 @@ Item {
                         radius: height / 2
                         color: chipMa.containsMouse && many ? Serp.surface1 : Serp.surface0
                         border.width: 1
-                        border.color: Serp.line
+                        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
                         visible: root.playerName(root.player) !== ""
                         scale: chipMa.pressed && many ? 0.96 : 1
                         Behavior on color {
@@ -733,7 +733,7 @@ Item {
             radius: width / 2
             color: tb.big ? (tbMa.containsMouse ? Qt.lighter(Serp.mauve, 1.1) : Serp.mauve) : tbMa.containsMouse ? Serp.surface1 : Serp.surface0
             border.width: tb.big ? 0 : 1
-            border.color: Serp.line
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
             scale: tbMa.pressed ? 0.96 : 1
             Behavior on color {
                 ColorAnimation {

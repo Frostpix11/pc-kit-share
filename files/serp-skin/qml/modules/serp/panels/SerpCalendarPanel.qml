@@ -97,7 +97,7 @@ Item {
         radius: Serp.radius
         color: Serp.ground
         border.width: 1
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
     }
 
     Row {

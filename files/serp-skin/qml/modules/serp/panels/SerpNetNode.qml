@@ -85,7 +85,7 @@ Item {
             y: parent.height - height + Serp.px(2)
             color: Serp.base
             border.width: 1
-            border.color: Serp.line
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
             SIcon {
                 anchors.centerIn: parent
                 name: "lock"
@@ -129,7 +129,7 @@ Item {
         radius: height / 2
         color: Qt.alpha(Serp.crust, 0.85)
         border.width: 1
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
         opacity: shown ? 1 : 0
         Behavior on opacity {
             NumberAnimation {

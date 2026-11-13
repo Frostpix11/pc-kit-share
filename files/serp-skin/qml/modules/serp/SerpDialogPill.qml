@@ -42,7 +42,7 @@ Item {
         radius: height / 2
         color: pill.filled ? (ma.containsMouse ? Qt.lighter(pill.fill, 1.1) : pill.fill) : ma.containsMouse ? (pill.kind === "flat" ? Serp.hover : Serp.surface2) : pill.fill
         border.width: pill.kind === "" ? 1 : 0
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
         Behavior on color {
             ColorAnimation {
                 duration: Serp.quick

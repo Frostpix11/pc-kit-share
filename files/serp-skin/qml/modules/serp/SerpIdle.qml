@@ -113,7 +113,7 @@ Item {
             radius: Serp.radius + Serp.px(4)
             color: root.aod ? "transparent" : Qt.alpha(Serp.base, 0.5)
             border.width: root.aod ? 0 : 1
-            border.color: Serp.line
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
             opacity: root.aod ? 0.6 : 1
             Row {
                 id: nowRow

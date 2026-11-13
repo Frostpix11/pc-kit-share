@@ -54,7 +54,7 @@ Item {
         radius: Math.min(Serp.radius * 1.4, Serp.px(24))
         color: root.plate
         border.width: 1
-        border.color: Serp.line
+        border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
     }
 
     // the strip: drag it to move the window

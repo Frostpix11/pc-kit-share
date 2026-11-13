@@ -74,7 +74,7 @@ Item {
                 radius: height / 2
                 color: Serp.surface0
                 border.width: 1
-                border.color: Serp.line
+                border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
                 Row {
                     id: chipRow
                     anchors.centerIn: parent
@@ -198,7 +198,7 @@ Item {
                 radius: width / 2
                 color: Serp.surface0
                 border.width: 1
-                border.color: Serp.line
+                border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
                 SText {
                     anchors.centerIn: parent
                     text: "+" + root.more
@@ -391,7 +391,7 @@ Item {
             radius: width / 2
             color: Serp.surface0
             border.width: 1
-            border.color: Serp.line
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))  // opaque: blur noise showed through the clear line
             MuteMark {
                 anchors.centerIn: parent
                 side: Serp.px(10)
