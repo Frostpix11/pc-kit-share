@@ -84,8 +84,10 @@ PanelWindow {
         left: true
         right: true
     }
-    // room above the slab for the lifted icon, the name and the menu (the mask passes it through)
-    implicitHeight: slabH + margin * 2 + Serp.px(48) + (menu.visible ? menu.height + Serp.px(8) : 0)
+    // room above the slab for the lifted icon, the name and the menu (the mask passes it through).
+    // One height always: grown when the menu opened, the surface was remade a size larger and the
+    // dock jumped a frame or two (and the hover under the pointer flickered with it)
+    implicitHeight: slabH + margin * 2 + Serp.px(48) + Serp.px(420)
     exclusiveZone: Shell.dev || autohide ? 0 : slabH + margin
     exclusionMode: Shell.dev ? ExclusionMode.Ignore : ExclusionMode.Normal
     onExclusiveZoneChanged: Minimize.dockZone[screenName] = exclusiveZone

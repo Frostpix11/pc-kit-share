@@ -411,7 +411,9 @@ Item {
                             MouseArea {
                                 id: nma
                                 width: parent.width
-                                height: nr.fullH
+                                // the whole row with its 2 px gap: the gap under each row was no one's,
+                                // and the pointer turned into an arrow there between two hands (flicker)
+                                height: nr.height
                                 enabled: nr.shown
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
