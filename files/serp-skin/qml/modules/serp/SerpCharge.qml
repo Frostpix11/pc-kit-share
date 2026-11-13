@@ -47,17 +47,24 @@ Item {
                 }
             }
 
-            // charging: a light running along the liquid
+            // charging: a light running along the liquid, born and gone inside it (it used to start
+            // left of the liquid and run past its end: over the rim, behind the glass) — clipped to
+            // the liquid, faded in and out at its ends so its rounded ends cut nothing sharp
+            clip: true
             Rectangle {
+                id: shine
                 visible: root.charging
-                width: parent.height * 1.6
+                width: Math.min(parent.height * 1.6, parent.width * 0.6)
                 height: parent.height
                 radius: height / 2
-                color: Qt.alpha("white", 0.45)
-                NumberAnimation on x {
+                color: "white"
+                property real t: 0       // 0 … 1 along the liquid
+                x: -width + t * (parent.width + width)
+                opacity: 0.45 * Math.min(1, Math.min(t, 1 - t) * 4)
+                NumberAnimation on t {
                     running: root.charging && root.visible
-                    from: -fill.height * 1.6
-                    to: fill.width
+                    from: 0
+                    to: 1
                     duration: 1400
                     loops: Animation.Infinite
                 }
@@ -79,7 +86,7 @@ Item {
         anchors.centerIn: body
         name: "zap"
         size: root.h * 0.95
-        color: Serp.base
+        color: Serp.text   // light: on the empty glass as on the liquid (the base colour vanished on an emptyish one)
         filled: true
     }
 }
