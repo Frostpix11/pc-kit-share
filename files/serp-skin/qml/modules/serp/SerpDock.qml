@@ -226,7 +226,12 @@ PanelWindow {
                         Rectangle {
                             anchors.fill: parent
                             radius: win.size * 0.28
-                            color: tma.containsMouse ? Qt.lighter(Serp.surface0, 1.12) : Serp.surface0
+                            // without the glass the slab is the base colour and surface0 nearly the same
+                            // in the wallpaper's palette: the tiles vanished into it. Then a tile is the
+                            // base lit by the text colour, lighter than the slab in any palette
+                            color: Serp.glassOn ? (tma.containsMouse ? Qt.lighter(Serp.surface0, 1.12) : Serp.surface0) : Qt.tint(Serp.base, Qt.alpha(Serp.text, tma.containsMouse ? 0.17 : 0.10))
+                            border.width: Serp.glassOn ? 0 : 1
+                            border.color: Qt.alpha(Serp.text, 0.07)
                             Behavior on color {
                                 ColorAnimation {
                                     duration: Serp.quick
