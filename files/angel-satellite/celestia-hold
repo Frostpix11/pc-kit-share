@@ -1,0 +1,17 @@
+#!/bin/bash
+# Селестия: держит окно X11-игры в её разрешении (angel-satellite + pc-kit patch: _ANGEL_SATELLITE_HOLD).
+# Игра видит окно WxH и рисует кадр WxH, на весь экран его плавно растягивает niri.
+#   celestia-hold "Заголовок окна" WxH     (ждёт окно до 3 минут, ставит свойство и выходит)
+title="$1"; size="$2"
+[[ "$size" =~ ^([0-9]+)x([0-9]+)$ ]] || exit 0
+w=${BASH_REMATCH[1]} h=${BASH_REMATCH[2]}
+export DISPLAY="${DISPLAY:-:1}"
+for _ in $(seq 360); do
+  win=$(xwininfo -root -tree 2>/dev/null | awk -v t="\"$title\":" 'index($0, t) {print $1; exit}')
+  if [[ -n "$win" ]]; then
+    xprop -id "$win" -f _ANGEL_SATELLITE_HOLD 32c -set _ANGEL_SATELLITE_HOLD "$w,$h" && \
+      echo "$(date '+%F %T') hold $title $win ${w}x$h" >> "$HOME/.config/celestia-run/runs.log"
+    exit 0
+  fi
+  sleep 0.5
+done

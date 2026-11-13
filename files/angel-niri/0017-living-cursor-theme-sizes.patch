@@ -1,0 +1,95 @@
+diff --git a/src/cursor.rs b/src/cursor.rs
+index d426a70d..20223d42 100644
+--- a/src/cursor.rs
++++ b/src/cursor.rs
+@@ -25,6 +25,8 @@ pub struct CursorManager {
+     size: u8,
+     current_cursor: CursorImageStatus,
+     named_cursor_cache: RefCell<XCursorCache>,
++    /// angel-niri: pictures by their pixel size (the living pointer's bigger draws)
++    sized_cursor_cache: RefCell<XCursorCache>,
+ }
+ 
+ impl CursorManager {
+@@ -38,6 +40,7 @@ impl CursorManager {
+             size,
+             current_cursor: CursorImageStatus::default_named(),
+             named_cursor_cache: Default::default(),
++            sized_cursor_cache: Default::default(),
+         }
+     }
+ 
+@@ -47,6 +50,7 @@ impl CursorManager {
+         self.theme = CursorTheme::load(theme);
+         self.size = size;
+         self.named_cursor_cache.get_mut().clear();
++        self.sized_cursor_cache.get_mut().clear();
+     }
+ 
+     /// Checks if the cursor WlSurface is alive, and if not, cleans it up.
+@@ -137,6 +141,34 @@ impl CursorManager {
+             .clone()
+     }
+ 
++    /// angel-niri (pc-kit 0017): the named cursor's picture closest to `px` pixels. The living
++    /// pointer (cursor_fx) draws the arrow bigger than the theme size; it takes the theme's bigger
++    /// picture and magnifies only what is left, instead of magnifying the small one (a smooth
++    /// cursor went jagged at ×1.5; pixel themes with one size stay as they were).
++    pub fn get_cursor_near(&self, icon: CursorIcon, px: i32) -> Option<Rc<XCursor>> {
++        self.sized_cursor_cache
++            .borrow_mut()
++            .entry((icon, px))
++            .or_insert_with_key(|(icon, px)| {
++                let mut cursor = Self::load_xcursor(&self.theme, icon.name(), *px);
++                if cursor.is_err() {
++                    for name in icon.alt_names() {
++                        cursor = Self::load_xcursor(&self.theme, name, *px);
++                        if cursor.is_ok() {
++                            break;
++                        }
++                    }
++                }
++                cursor.ok().map(Rc::new)
++            })
++            .clone()
++    }
++
++    /// The theme size, logical px.
++    pub fn size(&self) -> u8 {
++        self.size
++    }
++
+     /// Get default cursor.
+     pub fn get_default_cursor(&self, scale: i32) -> Rc<XCursor> {
+         // The default cursor always has a fallback.
+diff --git a/src/niri.rs b/src/niri.rs
+index 1953bec2..e59b533a 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -4194,7 +4194,25 @@ impl Niri {
+                 if let Some(lfx) = living.as_ref().filter(|_| !zoomed) {
+                     // angel-niri: the living pointer (cursor_fx): turned and scaled about the
+                     // tip, smeared back along its path, its shadow drawn last (underneath)
+-                    let f = crate::cursor_fx::frame(icon, scale, &cursor, idx, lfx);
++                    // pc-kit 0017: the theme's own bigger picture for a bigger draw, the rest
++                    // magnified (k shrinks by the ratio of the two pictures' widths)
++                    let want = (f64::from(self.cursor_manager.size()) * f64::from(scale) * lfx.scale * lfx.size)
++                        .round() as i32;
++                    let base_w = cursor.frames()[idx].width;
++                    let big = self
++                        .cursor_manager
++                        .get_cursor_near(icon, want)
++                        .filter(|b| b.frames()[0].width > base_w);
++                    let (draw, didx, dfx) = match big {
++                        Some(b) => {
++                            let (bi, _) = b.frame(self.start_time.elapsed().as_millis() as u32);
++                            let mut fx2 = lfx.clone();
++                            fx2.size *= f64::from(base_w) / f64::from(b.frames()[bi].width);
++                            (b, bi, fx2)
++                        }
++                        None => (cursor.clone(), idx, lfx.clone()),
++                    };
++                    let f = crate::cursor_fx::frame(icon, scale, &draw, didx, &dfx);
+                     put(renderer, push, pointer_pos - f.hot, output_scale, &f.buf, 1., Kind::Cursor);
+                     let (sx, sy) = lfx.streak;
+                     let len = sx.hypot(sy);

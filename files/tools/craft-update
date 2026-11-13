@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# craft-update: PhotoCraft and FilmCraft from the developer's own Arch packages, nothing built here.
+# Every release of storytold/photocraft and storytold/filmcraft on GitHub carries a ready
+# <app>-<ver>-linux-x86_64.pkg.tar.zst (package ai.storyteller.<app>; it conflicts with the AUR
+# builds photocraft / filmcraft, so pacman swaps them the first time). The file is checked against
+# the release's SHA256SUMS.txt, then installed with pacman -U. paru leaves them alone: no AUR
+# package has that name.
+#   craft-update          install what is behind (sudo asks the password)
+#   craft-update check    only say what is behind
+set -euo pipefail
+APPS=(photocraft filmcraft)
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/craft-update"
+mkdir -p "$CACHE"
+
+latest() {   # the newest release's version, without the v
+  curl -fsSL "https://api.github.com/repos/storytold/$1/releases/latest" |
+    python3 -I -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))'
+}
+installed() {   # the official package's version, empty if it isn't installed
+  pacman -Q "ai.storyteller.$1" 2>/dev/null | awk '{print $2}' | sed 's/-[0-9]*$//' || true
+}
+
+todo=()
+for a in "${APPS[@]}"; do
+  v=$(latest "$a")
+  have=$(installed "$a")
+  if [[ "$have" == "$v" ]]; then
+    echo "$a $v: свежий"
+    continue
+  fi
+  aur=$(pacman -Q "$a" 2>/dev/null | awk '{print $2}' || true)
+  if [[ -n "$have" ]]; then
+    echo "$a: $have → $v"
+  elif [[ -n "$aur" ]]; then
+    echo "$a: $aur из AUR (собирается) → $v готовым пакетом"
+  else
+    echo "$a: не стоит → $v"
+  fi
+  todo+=("$a:$v")
+done
+[[ ${#todo[@]} -eq 0 || "${1:-}" == check ]] && exit 0
+
+files=()
+for t in "${todo[@]}"; do
+  a=${t%%:*} v=${t#*:}
+  f="$a-$v-linux-x86_64.pkg.tar.zst"
+  url="https://github.com/storytold/$a/releases/download/v$v"
+  echo "качаю $f"
+  curl -fsSL -o "$CACHE/$f" "$url/$f"
+  curl -fsSL -o "$CACHE/$a-$v-SHA256SUMS.txt" "$url/SHA256SUMS.txt"
+  want=$(awk -v f="$f" '$2 == f || $2 == "*" f {print $1}' "$CACHE/$a-$v-SHA256SUMS.txt")
+  got=$(sha256sum "$CACHE/$f" | awk '{print $1}')
+  if [[ -z "$want" || "$want" != "$got" ]]; then
+    echo "$f: контрольная сумма не сошлась с SHA256SUMS.txt релиза, не ставлю"
+    exit 1
+  fi
+  files+=("$CACHE/$f")
+done
+# --ask=4: yes to "remove the conflicting AUR build?" only (the swap on the first run); with an
+# askpass (celestia-askpass) the password goes to its window, not to a terminal
+sudo ${SUDO_ASKPASS:+-A} pacman -U --needed --noconfirm --ask=4 "${files[@]}"
+# installed: the downloads are not needed any more
+rm -f "${files[@]}" "$CACHE"/*-SHA256SUMS.txt
+echo "готово"

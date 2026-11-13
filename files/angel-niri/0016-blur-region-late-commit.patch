@@ -1,0 +1,54 @@
+diff --git a/src/handlers/background_effect.rs b/src/handlers/background_effect.rs
+index 36299000..b57433ea 100644
+--- a/src/handlers/background_effect.rs
++++ b/src/handlers/background_effect.rs
+@@ -71,6 +71,29 @@ fn recompute_blur_region(states: &SurfaceData, inner: &mut CachedBlurRegionInner
+     inner.rects = None;
+ }
+ 
++/// Re-reads the current blur region; true when it differs from the cached one.
++fn refresh_blur_region(states: &SurfaceData, inner: &mut CachedBlurRegionInner) -> bool {
++    let cached = &states.cached_state;
++    let mut fresh: Option<Vec<Rectangle<i32, Logical>>> = None;
++    if cached.has::<BackgroundEffectSurfaceCachedState>() {
++        let mut guard = cached.get::<BackgroundEffectSurfaceCachedState>();
++        if let Some(region) = &guard.current().blur_region {
++            let mut rects = Vec::new();
++            region_to_non_overlapping_rects(region, &mut rects);
++            fresh = Some(rects);
++        }
++    }
++    let same = match (&inner.rects, &fresh) {
++        (None, None) => true,
++        (Some(old), Some(new)) => **old == *new,
++        _ => false,
++    };
++    if !same {
++        inner.rects = fresh.map(Arc::new);
++    }
++    !same
++}
++
+ fn mark_blur_region_pending_dirty(wl_surface: &WlSurface) {
+     let register_hook = with_states(wl_surface, |states| {
+         let cache = states
+@@ -92,10 +115,15 @@ fn mark_blur_region_pending_dirty(wl_surface: &WlSurface) {
+             with_states(surface, |states| {
+                 if let Some(cache) = states.data_map.get::<CachedBlurRegionUserData>() {
+                     let mut guard = cache.0.lock().unwrap();
+-                    if guard.pending_dirty {
+-                        guard.pending_dirty = false;
+-                        guard.dirty = true;
+-
++                    // pc-kit: with explicit sync, commits queue behind GPU fences and a region
++                    // change can land in a LATER transaction than the first one applied after
++                    // the request. That first one used to eat `pending_dirty` and cache the old
++                    // region, and the new one (an emptied blur region at a panel's close) was never
++                    // read: the blur stayed until unmap. Re-read the current region on every
++                    // applied commit and damage only when it really changed.
++                    guard.pending_dirty = false;
++                    guard.dirty = false;
++                    if refresh_blur_region(states, &mut guard) {
+                         crate::render_helpers::background_effect::damage_surface(states);
+                     }
+                 } else {

@@ -1,0 +1,36 @@
+#!/usr/bin/python
+# vm-fix: legacy speedtest.net server list returns only far-away (Iran) servers,
+# unreachable via VPN. Take servers from the current JS API instead; fall back to legacy.
+import json, sys, urllib.request
+import speedtest
+
+_orig = speedtest.Speedtest.get_servers
+
+def get_servers(self, servers=None, exclude=None):
+    servers = servers or []
+    exclude = exclude or []
+    try:
+        req = urllib.request.Request(
+            "https://www.speedtest.net/api/js/servers?engine=js&limit=20&https_functional=true",
+            headers={"User-Agent": "curl/8.10"})
+        data = json.load(urllib.request.urlopen(req, timeout=10))
+        self.servers.clear()
+        for s in data:
+            sid = int(s["id"])
+            if (servers and sid not in servers) or sid in exclude:
+                continue
+            a = {k: str(v) for k, v in s.items()}
+            a["url"] = "https://%s/speedtest/upload.php" % a["host"]  # VPN drops plain http
+            d = speedtest.distance(self.lat_lon, (float(a["lat"]), float(a["lon"])))
+            a["d"] = d
+            self.servers.setdefault(d, []).append(a)
+        if self.servers:
+            return self.servers
+    except Exception:
+        pass
+    return _orig(self, servers, exclude)
+
+speedtest.Speedtest.get_servers = get_servers
+if __name__ == "__main__":
+    sys.argv[0] = "speedtest-cli"
+    sys.exit(speedtest.main())

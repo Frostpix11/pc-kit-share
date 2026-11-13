@@ -1,0 +1,27 @@
+#!/bin/bash
+# Start EasyEffects in background once the shell tray (StatusNotifierWatcher) is up,
+# otherwise Qt decides there is no tray and never shows the icon; then load the preset.
+PRESET="${1:-Кайф}"
+sock="$XDG_RUNTIME_DIR/EasyEffectsServer"
+
+for _ in $(seq 1 120); do
+  busctl --user status org.kde.StatusNotifierWatcher >/dev/null 2>&1 && break
+  sleep 0.5
+done
+sleep 2  # let the watcher finish registering the host
+
+if ! pgrep -x easyeffects >/dev/null; then
+  # dark window: a KDE color scheme from the current angelOS palette
+  python3 -I "$HOME/.local/bin/kde-colors.py" easyeffects
+  start=$(date +%s)
+  setsid easyeffects --service-mode --hide-window </dev/null >/dev/null 2>&1 &
+  # a socket left by a previous run does not count: wait for this instance's one
+  for _ in $(seq 1 60); do
+    [ -S "$sock" ] && [ "$(stat -c %Y "$sock")" -ge "$start" ] && break
+    sleep 0.5
+  done
+  sleep 1
+fi
+
+pgrep -x easyeffects >/dev/null && timeout 10 easyeffects -l "$PRESET" >/dev/null 2>&1
+exit 0

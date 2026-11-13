@@ -1,0 +1,812 @@
+From 56d8600bbb78341cc257460964705cc571683c25 Mon Sep 17 00:00:00 2001
+From: angel <angel@vm>
+Date: Sun, 1 Nov 2026 10:22:03 +0200
+Subject: [PATCH 2/2] =?UTF-8?q?vm:=20camera=20=E2=80=94=20the=20screen=20z?=
+ =?UTF-8?q?ooms=20in=20on=20the=20pointer=20and=20glides=20after=20it=20(s?=
+ =?UTF-8?q?afe=20zone,=20spring,=20pan=20and=20zoom=20smear),=20SetCursorC?=
+ =?UTF-8?q?amera=20/=20ToggleCursorCamera?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ niri-config/src/binds.rs                 |  12 +
+ niri-ipc/src/lib.rs                      |  29 ++
+ src/camera.rs                            | 343 +++++++++++++++++++++++
+ src/input/mod.rs                         |  13 +
+ src/lib.rs                               |   1 +
+ src/niri.rs                              |  36 +++
+ src/render_helpers/framebuffer_effect.rs |  80 ++++++
+ src/render_helpers/shaders/camera.frag   |  71 +++++
+ src/render_helpers/shaders/mod.rs        |  19 ++
+ 9 files changed, 604 insertions(+)
+ create mode 100644 src/camera.rs
+ create mode 100644 src/render_helpers/shaders/camera.frag
+
+diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
+index 8e987c75..60739b5b 100644
+--- a/niri-config/src/binds.rs
++++ b/niri-config/src/binds.rs
+@@ -337,6 +337,11 @@ pub enum Action {
+     /// on, size, sway, blur, bounce, shadow, shadow distance, shadow softness
+     SetCursorFx(bool, f64, f64, f64, f64, f64, f64, f64),
+     #[knuffel(skip)]
++    /// allowed, zoom, smooth, blur
++    SetCursorCamera(bool, f64, f64, f64),
++    #[knuffel(skip)]
++    ToggleCursorCamera,
++    #[knuffel(skip)]
+     /// strength, bounce, squash, wobble
+     SetWindowThrow(f64, f64, f64, f64),
+     #[knuffel(skip)]
+@@ -714,6 +719,13 @@ impl From<niri_ipc::Action> for Action {
+                 shadow_dist,
+                 shadow_soft,
+             } => Self::SetCursorFx(on, size, sway, blur, bounce, shadow, shadow_dist, shadow_soft),
++            niri_ipc::Action::SetCursorCamera {
++                allowed,
++                zoom,
++                smooth,
++                blur,
++            } => Self::SetCursorCamera(allowed, zoom, smooth, blur),
++            niri_ipc::Action::ToggleCursorCamera {} => Self::ToggleCursorCamera,
+             niri_ipc::Action::SetWindowThrow {
+                 strength,
+                 bounce,
+diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
+index 394172fe..abf5b76a 100644
+--- a/niri-ipc/src/lib.rs
++++ b/niri-ipc/src/lib.rs
+@@ -713,6 +713,31 @@ pub enum Action {
+         #[serde(default = "default_cursor_fx_one")]
+         shadow_soft: f64,
+     },
++    /// Set up the camera that follows the pointer (angel-niri).
++    ///
++    /// `allowed` false keeps it out (and takes it out); `zoom` is how close it comes, `smooth`
++    /// how slowly it glides (1 = as Recordly), `blur` how much a fast pan or the zoom smears.
++    #[cfg_attr(feature = "clap", clap(about = "Set up the camera that follows the pointer"))]
++    SetCursorCamera {
++        /// May it zoom in at all.
++        #[cfg_attr(feature = "clap", arg(action = clap::ArgAction::Set))]
++        allowed: bool,
++        /// How close, 1.1 to 5.
++        #[cfg_attr(feature = "clap", arg(long, default_value_t = 1.8))]
++        #[serde(default = "default_cursor_camera_zoom")]
++        zoom: f64,
++        /// How slowly it glides, 0.3 to 3.
++        #[cfg_attr(feature = "clap", arg(long, default_value_t = 1.))]
++        #[serde(default = "default_cursor_fx_one")]
++        smooth: f64,
++        /// Smear of fast pans and of the zoom, 0 to 3.
++        #[cfg_attr(feature = "clap", arg(long, default_value_t = 1.))]
++        #[serde(default = "default_cursor_fx_one")]
++        blur: f64,
++    },
++    /// Zoom the screen in on the pointer and follow it, or back out (angel-niri).
++    #[cfg_attr(feature = "clap", clap(about = "Zoom in on the pointer and follow it, or back out"))]
++    ToggleCursorCamera {},
+     /// Turn on pixel window shadows (angel-niri).
+     ///
+     /// Windows get the layout's shadow drawn as dithered dots of `pixel` logical pixels instead
+@@ -2845,6 +2870,10 @@ fn default_desk_throw_strength() -> u8 {
+     1
+ }
+ 
++fn default_cursor_camera_zoom() -> f64 {
++    1.8
++}
++
+ fn default_cursor_fx_one() -> f64 {
+     1.
+ }
+diff --git a/src/camera.rs b/src/camera.rs
+new file mode 100644
+index 00000000..5e3087aa
+--- /dev/null
++++ b/src/camera.rs
+@@ -0,0 +1,343 @@
++//! angel-niri: a camera that follows the pointer. `niri msg action toggle-cursor-camera` zooms
++//! the screen in on the pointer and keeps it in view; again — back out. `set-cursor-camera
++//! true|false [--zoom 1.8] [--smooth 1] [--blur 1]` sets it up (the shell does, from Settings).
++//!
++//! As Recordly's cursor-follow camera (github.com/webadderall/Recordly, AGPL — the ideas and
++//! numbers, written anew): the view holds still while the pointer stays inside an inner safe zone
++//! (a quarter of the view in from each edge); once it leaves, the camera's goal jumps onto the
++//! pointer and a spring (stiffness 100, damping 21, mass 1 — barely overdamped) carries the view
++//! there; zooming in and out rides the same spring; the view never leaves the screen; fast pans
++//! smear along their way and zooming smears outward (shaders/camera.frag).
++//!
++//! Only the picture moves: the pointer, clicks and windows stay where they are in the layout; the
++//! compositor draws the finished frame of the output zoomed (render_helpers/framebuffer_effect)
++//! and the pointer over it at its place in the zoomed view, crisp, a little bigger with the zoom.
++
++use std::cell::RefCell;
++use std::time::Duration;
++
++use smithay::utils::{Logical, Point, Size};
++
++/// The safe zone: this share of the view in from each edge.
++const SAFE: f64 = 0.25;
++/// Camera shutter (Recordly: motion blur 0.35 × 4), and the longest smear on screen (logical).
++const SHUTTER: f64 = 1.4;
++const MAX_SMEAR: f64 = 42.;
++/// How much the pointer grows with the zoom: 1 + (zoom − 1) × this.
++pub const POINTER_GROW: f64 = 0.6;
++
++#[derive(Clone, Copy, Debug)]
++pub struct Params {
++    pub allowed: bool,
++    pub zoom: f64,
++    pub smooth: f64,
++    pub blur: f64,
++}
++
++#[derive(Clone, Copy, Default)]
++struct Spring {
++    x: f64,
++    v: f64,
++}
++
++impl Spring {
++    /// a·m = −k(x − target) − c·v, small substeps.
++    fn step(&mut self, target: f64, k: f64, c: f64, m: f64, mut dt: f64) {
++        while dt > 0. {
++            let h = dt.min(0.002);
++            let a = (-k * (self.x - target) - c * self.v) / m;
++            self.v += a * h;
++            self.x += self.v * h;
++            dt -= h;
++        }
++    }
++
++    fn settled(&self, target: f64, eps: f64) -> bool {
++        (self.x - target).abs() < eps && self.v.abs() < eps * 20.
++    }
++
++    fn snap(&mut self, x: f64) {
++        self.x = x;
++        self.v = 0.;
++    }
++}
++
++/// What the camera shows of an output this frame.
++#[derive(Clone, Copy, Debug)]
++pub struct Frame {
++    pub zoom: f64,
++    /// the content point at the centre of the screen, output-local logical
++    pub focus: Point<f64, Logical>,
++    /// half the output, logical
++    pub half: (f64, f64),
++    /// the smear: along the pan, content logical px (whole length); outward, share per side
++    pub smear: (f64, f64),
++    pub radial: f64,
++}
++
++impl Frame {
++    /// Where an output-local point of the content shows on the screen.
++    pub fn to_screen(&self, p: Point<f64, Logical>) -> Point<f64, Logical> {
++        Point::from((
++            (p.x - self.focus.x) * self.zoom + self.half.0,
++            (p.y - self.focus.y) * self.zoom + self.half.1,
++        ))
++    }
++
++    /// How much bigger the pointer is drawn.
++    pub fn pointer_grow(&self) -> f64 {
++        1. + (self.zoom - 1.) * POINTER_GROW
++    }
++}
++
++struct State {
++    params: Params,
++    on: bool,
++    output: Option<String>,
++    last: Option<Duration>,
++    zoom: Spring,
++    fx: Spring,
++    fy: Spring,
++    /// where the camera is heading (Recordly's persistent focus)
++    goal: (f64, f64),
++    prev: Option<(f64, f64, f64)>,
++    frame: Option<(String, Frame)>,
++}
++
++thread_local! {
++    static STATE: RefCell<State> = RefCell::new(State {
++        params: Params { allowed: false, zoom: 1.8, smooth: 1., blur: 1. },
++        on: false,
++        output: None,
++        last: None,
++        zoom: Spring { x: 1., v: 0. },
++        fx: Spring::default(),
++        fy: Spring::default(),
++        goal: (0., 0.),
++        prev: None,
++        frame: None,
++    });
++}
++
++fn finite(x: f64, or: f64) -> f64 {
++    if x.is_finite() {
++        x
++    } else {
++        or
++    }
++}
++
++pub fn set(params: Params) {
++    STATE.with_borrow_mut(|s| {
++        s.params = Params {
++            allowed: params.allowed,
++            zoom: finite(params.zoom, 1.8).clamp(1.1, 5.),
++            smooth: finite(params.smooth, 1.).clamp(0.3, 3.),
++            blur: finite(params.blur, 1.).clamp(0., 3.),
++        };
++        if !params.allowed {
++            s.on = false;
++        }
++    });
++}
++
++/// In or out. Not allowed (Settings) — stays out.
++pub fn toggle() {
++    STATE.with_borrow_mut(|s| {
++        if !s.params.allowed {
++            s.on = false;
++            return;
++        }
++        s.on = !s.on;
++        if s.on && s.zoom.x <= 1.001 {
++            // the output under the pointer is picked by its next frame
++            s.output = None;
++        }
++    });
++}
++
++pub fn is_on() -> bool {
++    STATE.with_borrow(|s| s.on)
++}
++
++/// Advance the camera of `output` to `now`; `pointer` is the pointer on it (output-local), if
++/// it is there. None: this output is shown as is.
++pub fn update(
++    output: &str,
++    now: Duration,
++    pointer: Option<Point<f64, Logical>>,
++    size: Size<f64, Logical>,
++) -> Option<Frame> {
++    STATE.with_borrow_mut(|s| {
++        let resting = !s.on && s.zoom.x <= 1.001 && s.zoom.v.abs() < 0.01;
++        if resting {
++            s.output = None;
++            s.frame = None;
++            s.last = None;
++            s.prev = None;
++            s.zoom.snap(1.);
++            return None;
++        }
++        match &s.output {
++            Some(o) if o != output => return None,
++            Some(_) => (),
++            None => {
++                // starting: the output the pointer is on, the view centred on the pointer
++                let p = pointer?;
++                s.output = Some(output.to_owned());
++                s.fx.snap(p.x);
++                s.fy.snap(p.y);
++                s.goal = (p.x, p.y);
++                s.zoom.snap(1.);
++                s.last = None;
++                s.prev = None;
++            }
++        }
++        // a second look at the same frame, or a capture (screencopy, screencast) whose clock is
++        // a little behind the screen's: the camera doesn't move for it
++        if let (Some(last), Some((o, f))) = (s.last, &s.frame) {
++            if now <= last && o == output {
++                return Some(*f);
++            }
++        }
++
++        let dt = match s.last {
++            Some(last) if now > last => (now - last).as_secs_f64().min(0.1),
++            _ => 0.,
++        };
++        s.last = Some(now);
++
++        let p = s.params;
++        let target_zoom = if s.on { p.zoom } else { 1. };
++        let (w, h) = (size.w, size.h);
++
++        // the safe zone of the view at the zoom it is going to: the goal recentres on the
++        // pointer only when it leaves it (zooming out the camera holds still)
++        if s.on {
++            if let Some(ptr) = pointer {
++                let half = (w / (2. * target_zoom), h / (2. * target_zoom));
++                let inset = (half.0 * 2. * SAFE, half.1 * 2. * SAFE);
++                if ptr.x < s.goal.0 - half.0 + inset.0 || ptr.x > s.goal.0 + half.0 - inset.0 {
++                    s.goal.0 = ptr.x;
++                }
++                if ptr.y < s.goal.1 - half.1 + inset.1 || ptr.y > s.goal.1 + half.1 - inset.1 {
++                    s.goal.1 = ptr.y;
++                }
++                s.goal.0 = s.goal.0.clamp(half.0, (w - half.0).max(half.0));
++                s.goal.1 = s.goal.1.clamp(half.1, (h - half.1).max(half.1));
++            }
++        }
++
++        // Recordly's zoom spring: stiffness 100/smooth, damping 21, mass smooth
++        let (k, c, m) = (100. / p.smooth, 21., p.smooth);
++        s.zoom.step(target_zoom, k, c, m, dt);
++        s.fx.step(s.goal.0, k, c, m, dt);
++        s.fy.step(s.goal.1, k, c, m, dt);
++
++        let zoom = s.zoom.x.max(1.);
++        // never past the edges at the zoom it is at now
++        let half_view = (w / (2. * zoom), h / (2. * zoom));
++        let focus = Point::from((
++            s.fx.x.clamp(half_view.0, (w - half_view.0).max(half_view.0)),
++            s.fy.x.clamp(half_view.1, (h - half_view.1).max(half_view.1)),
++        ));
++
++        // the smear: how far the view went this frame, at 60 fps, through the shutter
++        let mut smear = (0., 0.);
++        let mut radial = 0.;
++        if let (Some((px, py, pz)), true) = (s.prev, dt > 0.) {
++            let per60 = 1. / (60. * dt);
++            let shutter = SHUTTER * p.blur * per60;
++            let (mut sx, mut sy) = ((focus.x - px) * shutter, (focus.y - py) * shutter);
++            let on_screen = sx.hypot(sy) * zoom;
++            if on_screen > MAX_SMEAR {
++                let k = MAX_SMEAR / on_screen;
++                sx *= k;
++                sy *= k;
++            }
++            smear = (sx, sy);
++            radial = ((zoom - pz) / zoom * shutter).clamp(-0.12, 0.12);
++        }
++        s.prev = Some((focus.x, focus.y, zoom));
++
++        let frame = Frame {
++            zoom,
++            focus,
++            half: (w / 2., h / 2.),
++            smear,
++            radial,
++        };
++        s.frame = Some((output.to_owned(), frame));
++        Some(frame)
++    })
++}
++
++/// The camera of `output` as last worked out (for the pointer, drawn after it).
++pub fn current(output: &str) -> Option<Frame> {
++    STATE.with_borrow(|s| match &s.frame {
++        Some((o, f)) if o == output && s.output.as_deref() == Some(output) => Some(*f),
++        _ => None,
++    })
++}
++
++/// Still moving (so the compositor keeps drawing).
++pub fn animating() -> bool {
++    STATE.with_borrow(|s| {
++        if s.output.is_none() {
++            return s.on;
++        }
++        let tz = if s.on { s.params.zoom } else { 1. };
++        !s.zoom.settled(tz, 0.0005)
++            || !s.fx.settled(s.goal.0, 0.05)
++            || !s.fy.settled(s.goal.1, 0.05)
++            || s.frame.as_ref().is_some_and(|(_, f)| {
++                f.smear.0.hypot(f.smear.1) > 0.05 || f.radial.abs() > 0.0005
++            })
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn spring_lands_without_wobble() {
++        let mut sp = Spring { x: 1., v: 0. };
++        let mut over = false;
++        for _ in 0..240 {
++            sp.step(1.8, 100., 21., 1., 1. / 60.);
++            over |= sp.x > 1.81;
++        }
++        assert!(!over);
++        assert!(sp.settled(1.8, 0.001));
++    }
++
++    #[test]
++    fn a_capture_behind_the_screen_does_not_move_the_camera() {
++        set(Params { allowed: true, zoom: 2., smooth: 1., blur: 1. });
++        toggle();
++        let size = Size::from((800., 600.));
++        let t = Duration::from_secs(50);
++        let p = Some(Point::from((400., 300.)));
++        update("o", t, p, size).unwrap();
++        let screen = update("o", t + Duration::from_millis(16), p, size).unwrap();
++        let capture = update("o", t + Duration::from_millis(4), p, size).unwrap();
++        assert_eq!(screen.zoom, capture.zoom);
++        assert!(update("o", t + Duration::from_millis(33), p, size).is_some());
++        toggle();
++        set(Params { allowed: false, zoom: 1.8, smooth: 1., blur: 1. });
++    }
++
++    #[test]
++    fn to_screen_keeps_focus_central() {
++        let f = Frame {
++            zoom: 2.,
++            focus: Point::from((100., 50.)),
++            half: (400., 300.),
++            smear: (0., 0.),
++            radial: 0.,
++        };
++        assert_eq!(f.to_screen(Point::from((100., 50.))), Point::from((400., 300.)));
++        assert_eq!(f.to_screen(Point::from((110., 50.))), Point::from((420., 300.)));
++    }
++}
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index ccc08e85..820d216a 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -1041,6 +1041,19 @@ impl State {
+                 });
+                 self.niri.queue_redraw_all();
+             }
++            Action::SetCursorCamera(allowed, zoom, smooth, blur) => {
++                crate::camera::set(crate::camera::Params {
++                    allowed,
++                    zoom,
++                    smooth,
++                    blur,
++                });
++                self.niri.queue_redraw_all();
++            }
++            Action::ToggleCursorCamera => {
++                crate::camera::toggle();
++                self.niri.queue_redraw_all();
++            }
+             Action::SetCursorZoom(zoom, ms) => {
+                 crate::cursor_zoom::set(zoom, ms, self.niri.clock.now());
+                 self.niri.queue_redraw_all();
+diff --git a/src/lib.rs b/src/lib.rs
+index d1653db9..88a83a77 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -14,6 +14,7 @@ pub mod cast_pause;
+ pub mod cli;
+ pub mod clipboard_keep;
+ pub mod cursor;
++pub mod camera;
+ pub mod cursor_fx;
+ pub mod cursor_zoom;
+ #[cfg(feature = "dbus")]
+diff --git a/src/niri.rs b/src/niri.rs
+index 439c0df7..24f1fbf7 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -563,6 +563,8 @@ pub struct OutputState {
+     screen_transition: Option<ScreenTransition>,
+     /// angel-niri (desk_throw.rs): the broken screen drawn over the finished frame.
+     glitch_fx: RefCell<FramebufferEffect>,
++    /// angel-niri (camera.rs): the frame seen through the camera that follows the pointer.
++    camera_fx: RefCell<FramebufferEffect>,
+     /// Damage tracker used for the debug damage visualization.
+     pub debug_damage_tracker: OutputDamageTracker,
+     /// angel-niri (game.rs): when the last redraw began, and until when a background output's
+@@ -3227,6 +3229,7 @@ impl Niri {
+             lock_color_buffer: SolidColorBuffer::new(size, CLEAR_COLOR_LOCKED),
+             screen_transition: None,
+             glitch_fx: RefCell::new(FramebufferEffect::new()),
++            camera_fx: RefCell::new(FramebufferEffect::new()),
+             debug_damage_tracker: OutputDamageTracker::from_output(&output),
+             last_redraw_at: None,
+             background_until: None,
+@@ -4064,6 +4067,9 @@ impl Niri {
+             .tablet_cursor_location
+             .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
+         let pointer_pos = pointer_pos - output_pos.to_f64();
++        // angel-niri (camera.rs): through the camera the pointer is where its spot shows
++        let camera = crate::camera::current(&output.name());
++        let pointer_pos = camera.map_or(pointer_pos, |cam| cam.to_screen(pointer_pos));
+ 
+         // Get the render cursor to draw.
+         let cursor_scale = output_scale.integer_scale();
+@@ -4096,6 +4102,13 @@ impl Niri {
+             },
+             !matches!(render_cursor, RenderCursor::Hidden),
+         );
++        // …and a little bigger with the zoom
++        let living = living.map(|mut fx| {
++            if let Some(cam) = camera {
++                fx.size *= cam.pointer_grow();
++            }
++            fx
++        });
+         let mut living_shadow: Option<(crate::cursor_fx::Frame, (f64, f64, f32))> = None;
+         let mut living_height = 0.;
+ 
+@@ -4699,6 +4712,19 @@ impl Niri {
+             push
+         };
+ 
++        // angel-niri (camera.rs): the screen zoomed in on the pointer and following it; worked out
++        // first, the pointer is drawn where its spot shows
++        let camera = self.global_space.output_geometry(output).and_then(|out_geo| {
++            let ptr = self.seat.get_pointer().unwrap().current_location();
++            let inside = out_geo.to_f64().contains(ptr);
++            crate::camera::update(
++                &output.name(),
++                self.clock.now(),
++                inside.then(|| ptr - out_geo.loc.to_f64()),
++                output_size(output),
++            )
++        });
++
+         // angel-niri (desk_throw.rs): a broken screen over everything, the pointer too: it sinks
+         // into the dead zone like the rest of the picture (the backend keeps it off the cursor
+         // plane meanwhile, see `desk_throw::glitch_at` in tty.rs)
+@@ -4714,6 +4740,14 @@ impl Niri {
+             self.render_pointer(ctx.renderer, output, &mut |elem| push(elem.into()));
+         }
+ 
++        // angel-niri (camera.rs): under the pointer, over everything else: the finished frame
++        // seen through the camera
++        if let Some(cam) = camera {
++            let geometry = Rectangle::from_size(output_size(output));
++            let elem = (state.camera_fx.borrow_mut()).render_camera(geometry, output_scale.x, cam);
++            push(elem.into());
++        }
++
+         // Next, the screen transition texture.
+         {
+             if let Some(transition) = &state.screen_transition {
+@@ -5154,6 +5188,8 @@ impl Niri {
+             state.unfinished_animations_remain |= crate::cursor_zoom::animating(self.clock.now());
+             // …or living (angel-niri cursor_fx)
+             state.unfinished_animations_remain |= crate::cursor_fx::animating(self.clock.now());
++            // …or the camera gliding (angel-niri camera.rs)
++            state.unfinished_animations_remain |= crate::camera::animating();
+ 
+             // Also check layer surfaces.
+             if !state.unfinished_animations_remain {
+diff --git a/src/render_helpers/framebuffer_effect.rs b/src/render_helpers/framebuffer_effect.rs
+index 5b3b92a0..e98ba0d9 100644
+--- a/src/render_helpers/framebuffer_effect.rs
++++ b/src/render_helpers/framebuffer_effect.rs
+@@ -41,6 +41,8 @@ pub struct FramebufferEffectElement {
+     saturation: f32,
+     /// angel-niri (desk_throw.rs): drawn broken instead (shaders/glitch.frag).
+     glitch: Option<crate::desk_throw::GlitchFrame>,
++    /// angel-niri (camera.rs): drawn through the camera instead (shaders/camera.frag).
++    camera: Option<crate::camera::Frame>,
+ }
+ 
+ #[derive(Debug)]
+@@ -97,6 +99,7 @@ impl FramebufferEffect {
+             noise,
+             saturation,
+             glitch: None,
++            camera: None,
+         }
+     }
+ 
+@@ -121,6 +124,32 @@ impl FramebufferEffect {
+             noise: 0.,
+             saturation: 1.,
+             glitch: Some(glitch),
++            camera: None,
++        }
++    }
++
++    /// angel-niri (camera.rs): the frame under `geometry` (a whole output, logical) seen through
++    /// the camera; damaged every time.
++    pub fn render_camera(
++        &mut self,
++        geometry: Rectangle<f64, Logical>,
++        scale: f64,
++        camera: crate::camera::Frame,
++    ) -> FramebufferEffectElement {
++        self.commit.increment();
++        FramebufferEffectElement {
++            id: self.id.clone(),
++            commit: self.commit,
++            geometry,
++            clip_geo: geometry,
++            corner_radius: CornerRadius::default(),
++            subregion: None,
++            scale: scale as f32,
++            blur_options: None,
++            noise: 0.,
++            saturation: 1.,
++            glitch: None,
++            camera: Some(camera),
+         }
+     }
+ }
+@@ -518,6 +547,57 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
+             clamped_dst.size.to_f64().upscale(dst_to_src).to_logical(1.),
+         );
+ 
++        if let Some(cam) = self.camera {
++            let program = Shaders::get_from_frame(frame).camera.clone();
++            let scale = f64::from(self.scale);
++            let screen = [
++                (self.geometry.size.w * scale) as f32,
++                (self.geometry.size.h * scale) as f32,
++            ];
++            let tex_to_screen = Mat3::from_translation(Vec2::new(0.5, 0.5))
++                * frame.transformation().matrix()
++                * Mat3::from_translation(Vec2::new(-0.5, -0.5));
++            // the smear in physical px, and how many taps it needs (one per ~3 px on screen)
++            let smear = (cam.smear.0 * scale, cam.smear.1 * scale);
++            let along = smear.0.hypot(smear.1) * cam.zoom;
++            let outward = cam.radial.abs() * f64::from(screen[0].max(screen[1])) * 0.5;
++            let taps = (along.max(outward) / 3.).ceil().clamp(1., 13.);
++            let taps = if taps < 2. { 1. } else { taps };
++            let uniforms = [
++                Uniform::new("g_screen", screen),
++                mat3_uniform("g_tex_to_screen", tex_to_screen),
++                mat3_uniform("g_screen_to_tex", tex_to_screen.inverse()),
++                Uniform::new(
++                    "g_view",
++                    [
++                        (cam.focus.x * scale) as f32,
++                        (cam.focus.y * scale) as f32,
++                        cam.zoom as f32,
++                        taps as f32,
++                    ],
++                ),
++                Uniform::new(
++                    "g_smear",
++                    [smear.0 as f32, smear.1 as f32, cam.radial as f32, 0.],
++                ),
++            ];
++            return frame.render_texture_from_to(
++                texture,
++                Rectangle::from_size(texture.size().to_f64()),
++                clamped_dst,
++                damage,
++                &[],
++                frame.transformation().invert(),
++                1.,
++                program.as_ref(),
++                if program.is_some() {
++                    &uniforms[..]
++                } else {
++                    &[]
++                },
++            );
++        }
++
+         if let Some(glitch) = self.glitch {
+             let program = Shaders::get_from_frame(frame).glitch.clone();
+             let size = texture.size();
+diff --git a/src/render_helpers/shaders/camera.frag b/src/render_helpers/shaders/camera.frag
+new file mode 100644
+index 00000000..a150be5a
+--- /dev/null
++++ b/src/render_helpers/shaders/camera.frag
+@@ -0,0 +1,71 @@
++#version 100
++
++//_DEFINES_
++
++#if defined(EXTERNAL)
++#extension GL_OES_EGL_image_external : require
++#endif
++
++precision highp float;
++#if defined(EXTERNAL)
++uniform samplerExternalOES tex;
++#else
++uniform sampler2D tex;
++#endif
++
++uniform float alpha;
++varying vec2 v_coords;
++
++#if defined(DEBUG_FLAGS)
++uniform float tint;
++#endif
++
++// angel-niri (camera.rs): the finished frame of an output seen through a camera that follows the
++// pointer — zoomed about `focus`, smeared along the pan and outward while zooming, as a camera
++// with its shutter open for a moment. Laid out on the upright screen in physical pixels.
++uniform vec2 g_screen;
++uniform mat3 g_tex_to_screen;
++uniform mat3 g_screen_to_tex;
++// focus x, y (physical px of the content at the screen's centre), zoom, taps (1 = sharp)
++uniform vec4 g_view;
++// smear along the pan (content physical px, whole length), outward (share per side), 0, 0
++uniform vec4 g_smear;
++
++vec2 toTex(vec2 s) {
++    return clamp((g_screen_to_tex * vec3(s / g_screen, 1.0)).xy, vec2(0.0), vec2(1.0));
++}
++
++void main() {
++    vec2 s = (g_tex_to_screen * vec3(v_coords, 1.0)).xy * g_screen;
++    vec2 c = g_view.xy + (s - 0.5 * g_screen) / g_view.z;
++
++    vec3 col;
++    float n = g_view.w;
++    if (n < 1.5) {
++        col = texture2D(tex, toTex(c)).rgb;
++    } else {
++        // a tent of taps centred on the point: the smear trails both ways like a real shutter
++        vec3 acc = vec3(0.0);
++        float wsum = 0.0;
++        for (int i = 0; i < 13; i++) {
++            if (float(i) >= n)
++                break;
++            float t = float(i) / (n - 1.0) - 0.5;
++            vec2 p = c - g_smear.xy * t - (c - g_view.xy) * g_smear.z * t;
++            float w = 1.0 - abs(t) * 1.2;
++            acc += texture2D(tex, toTex(p)).rgb * w;
++            wsum += w;
++        }
++        col = acc / wsum;
++    }
++
++    vec4 color = vec4(col, 1.0);
++    color = color * alpha;
++
++#if defined(DEBUG_FLAGS)
++    if (tint == 1.0)
++        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
++#endif
++
++    gl_FragColor = color;
++}
+diff --git a/src/render_helpers/shaders/mod.rs b/src/render_helpers/shaders/mod.rs
+index 7dac9b0d..0bc54739 100644
+--- a/src/render_helpers/shaders/mod.rs
++++ b/src/render_helpers/shaders/mod.rs
+@@ -24,6 +24,8 @@ pub struct Shaders {
+     pub nearest: Option<GlesTexProgram>,
+     /// angel-niri (desk_throw.rs)
+     pub glitch: Option<GlesTexProgram>,
++    /// angel-niri (camera.rs)
++    pub camera: Option<GlesTexProgram>,
+     pub blur: Option<BlurProgram>,
+     pub custom_resize: RefCell<Option<ShaderProgram>>,
+     pub custom_close: RefCell<Option<ShaderProgram>>,
+@@ -235,6 +237,22 @@ impl Shaders {
+             })
+             .ok();
+ 
++        let camera = renderer
++            .compile_custom_texture_shader(
++                include_str!("camera.frag"),
++                &[
++                    UniformName::new("g_screen", UniformType::_2f),
++                    UniformName::new("g_tex_to_screen", UniformType::Matrix3x3),
++                    UniformName::new("g_screen_to_tex", UniformType::Matrix3x3),
++                    UniformName::new("g_view", UniformType::_4f),
++                    UniformName::new("g_smear", UniformType::_4f),
++                ],
++            )
++            .map_err(|err| {
++                warn!("error compiling camera shader: {err:?}");
++            })
++            .ok();
++
+         let blur = BlurProgram::compile(renderer)
+             .map_err(|err| {
+                 warn!("error compiling blur shaders: {err:?}");
+@@ -252,6 +270,7 @@ impl Shaders {
+             gradient_fade,
+             nearest,
+             glitch,
++            camera,
+             blur,
+             custom_resize: RefCell::new(None),
+             custom_close: RefCell::new(None),
+-- 
+2.56.0
+

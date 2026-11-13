@@ -1,0 +1,19 @@
+[Unit]
+Description=NVIDIA RTX 3060: fans at 50% while warm, the card's own curve above 65 C (Селестия)
+After=nvidia-persistenced.service nvidia-gpu-offset.service
+Wants=nvidia-persistenced.service
+# it must keep coming back: a stopped service leaves the fans on the card's curve, nothing worse
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I /usr/local/lib/celestia/gpu-fan-curve.py run
+# any way out, a crash and kill -9 too: the fans go back to the card
+ExecStopPost=/usr/bin/python3 -I /usr/local/lib/celestia/gpu-fan-curve.py auto
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

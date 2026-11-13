@@ -1,0 +1,27 @@
+# pc-kit (Селестия, 2026-11-13): Millennium from the developer's own Linux build, nothing compiled.
+# After the AUR's millennium-bin (Adam Mlady), raised to 3.6.3: the 64-bit Steam client (SteamRT3,
+# steamrt64/steam in a pressure-vessel container) needs libmillennium_bootstrap_x64.so linked as
+# steamrt64/libXtst.so.6 through /run/host — millennium.install is the AUR millennium's own.
+# A new release: bump pkgver, put its tarball's sha256 below (the release's .sha256 lists it).
+pkgname=millennium-bin
+pkgver=3.6.3
+pkgrel=1
+pkgdesc="Open-source modding framework for creating and managing Steam Client themes and plugins"
+url="https://github.com/SteamClientHomebrew/Millennium"
+arch=('x86_64')
+license=('MIT')
+provides=('millennium')
+conflicts=('millennium' 'millennium-git' 'millennium-x86')
+depends=('steam')
+options=('!strip')
+install=millennium.install
+source=("${url}/releases/download/v${pkgver//_/-}/millennium-v${pkgver//_/-}-linux-${arch}.tar.gz"
+        "LICENSE-${pkgver}.md::https://raw.githubusercontent.com/SteamClientHomebrew/Millennium/v${pkgver//_/-}/LICENSE.md")
+sha256sums=('9d9a5f8448cf92f4634d6ea49b5263409157cccf5b68a8ff10e962c8d7e52c28'
+            'f01d1b8bce439ee29491817247a38611c41f7d1de4360b5577d4498d103fbf8b')
+
+package() {
+  install -Dm644 "${srcdir}/LICENSE-${pkgver}.md" "${pkgdir}/usr/share/licenses/millennium/LICENSE.md"
+  install -d "${pkgdir}/usr/lib/millennium"
+  install -m755 "${srcdir}"/usr/lib/millennium/* "${pkgdir}/usr/lib/millennium/"
+}

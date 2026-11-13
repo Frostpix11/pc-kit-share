@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""celestia-watch: cheap system recorder for game benchmarks (Celestia, 2026-11-03).
+
+Reads /proc, /sys and NVML directly (no subprocess per sample) and writes JSONL to
+~/mangologs/watch/watch-<start>.jsonl.  Records:
+  fast (every 0.25 s): per-core load + MHz, forks/s, ctxt/s, PSI cpu/mem/io, GPU util/clocks/
+        power/temp/throttle reasons, game-mode state
+  slow (every 1 s):    per-process CPU (all), threads of watched processes (CPU, run-queue
+        wait from schedstat, nice, core), new processes, GPU per-process SM% + VRAM, memory,
+        vmstat faults/swap, niri events, own CPU cost
+  pw   (every 10 s):   PipeWire nodes (pw-top -b) quantum/rate/errors
+Stop with Ctrl+C / SIGTERM.  Summary: celestia-watch-sum.
+"""
+from __future__ import annotations
+
+import json, os, signal, subprocess, sys, threading, time
+from pathlib import Path
+
+FAST, SLOW, PW = 0.25, 1.0, 10.0
+HZ = os.sysconf("SC_CLK_TCK")
+NCPU = os.cpu_count() or 1
+# processes whose threads are recorded one by one (comm prefix, lowercase)
+WATCH = ("cs2", "niri", "quickshell", "qs", "xwayland", "xwayland-satel", "spotify", "pipewire",
+         "wireplumber", "cava", "discord", "helium", "steam", "gamemoded", "mangohud", "python3",
+         "voxtype", "wf-recorder", "gpu-screen-rec")
+OUT_DIR = Path.home() / "mangologs/watch"
+RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+stop = False
+
+
+def rd(p: str) -> str:
+    try:
+        with open(p) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def cpu_times() -> tuple[list[tuple[int, int]], dict]:
+    cores, misc = [], {}
+    for line in rd("/proc/stat").splitlines():
+        if line.startswith("cpu") and line[3:4].isdigit():
+            v = list(map(int, line.split()[1:]))
+            idle = v[3] + v[4]
+            cores.append((sum(v[:8]), idle))
+        elif line.startswith(("ctxt", "processes", "intr", "procs_running", "procs_blocked")):
+            k, val = line.split()[:2]
+            misc[k] = int(val)
+    return cores, misc
+
+
+def mhz() -> list[int]:
+    out = []
+    for i in range(NCPU):
+        v = rd(f"/sys/devices/system/cpu/cpu{i}/cpufreq/scaling_cur_freq").strip()
+        out.append(int(v) // 1000 if v else 0)
+    return out
+
+
+def psi() -> dict:
+    res = {}
+    for k in ("cpu", "memory", "io"):
+        for line in rd(f"/proc/pressure/{k}").splitlines():
+            parts = dict(x.split("=") for x in line.split()[1:])
+            res[f"{k}_{line.split()[0]}"] = int(parts.get("total", 0))
+    return res
+
+
+def parse_stat(s: str):
+    # pid (comm) state ppid ... ; comm may hold spaces/parens
+    r = s.rfind(")")
+    comm = s[s.find("(") + 1:r]
+    f = s[r + 2:].split()
+    # f[0]=state; utime=f[11], stime=f[12], nice=f[16], threads=f[17], starttime=f[19], rss=f[21], processor=f[36]
+    return comm, f[0], int(f[11]) + int(f[12]), int(f[16]), int(f[17]), int(f[19]), int(f[21]), int(f[36])
+
+
+class Gpu:
+    def __init__(self):
+        self.ok = False
+        try:
+            import pynvml as n
+            n.nvmlInit()
+            self.n, self.h = n, n.nvmlDeviceGetHandleByIndex(0)
+            self.ok = True
+            self.last_ts = 0
+            self.reasons = getattr(n, "nvmlDeviceGetCurrentClocksEventReasons", None) or n.nvmlDeviceGetCurrentClocksThrottleReasons
+        except Exception as e:  # noqa
+            print("nvml:", e, file=sys.stderr)
+
+    def fast(self) -> dict:
+        if not self.ok:
+            return {}
+        n, h = self.n, self.h
+        d = {}
+        try:
+            u = n.nvmlDeviceGetUtilizationRates(h)
+            d.update(gu=u.gpu, gmu=u.memory)
+            d["gclk"] = n.nvmlDeviceGetClockInfo(h, n.NVML_CLOCK_GRAPHICS)
+            d["mclk"] = n.nvmlDeviceGetClockInfo(h, n.NVML_CLOCK_MEM)
+            d["gw"] = round(n.nvmlDeviceGetPowerUsage(h) / 1000, 1)
+            d["gt"] = n.nvmlDeviceGetTemperature(h, n.NVML_TEMPERATURE_GPU)
+            d["thr"] = int(self.reasons(h))
+            d["ps"] = int(n.nvmlDeviceGetPerformanceState(h))
+        except Exception as e:  # noqa
+            d["gerr"] = str(e)
+        return d
+
+    def slow(self) -> dict:
+        if not self.ok:
+            return {}
+        n, h = self.n, self.h
+        d = {"sm": {}, "vram": {}}
+        try:
+            samples = n.nvmlDeviceGetProcessUtilization(h, self.last_ts)
+            for s in samples:
+                self.last_ts = max(self.last_ts, s.timeStamp)
+                cur = d["sm"].get(s.pid, (0, 0, 0))
+                d["sm"][s.pid] = (max(cur[0], s.smUtil), max(cur[1], s.memUtil), max(cur[2], s.encUtil))
+        except Exception:
+            pass
+        try:
+            for p in n.nvmlDeviceGetGraphicsRunningProcesses(h):
+                d["vram"][p.pid] = (p.usedGpuMemory or 0) >> 20
+            m = n.nvmlDeviceGetMemoryInfo(h)
+            d["vram_used"] = m.used >> 20
+            d["pcie_tx"] = n.nvmlDeviceGetPcieThroughput(h, n.NVML_PCIE_UTIL_TX_BYTES)
+            d["pcie_rx"] = n.nvmlDeviceGetPcieThroughput(h, n.NVML_PCIE_UTIL_RX_BYTES)
+        except Exception:
+            pass
+        d["sm"] = {str(k): v for k, v in d["sm"].items()}
+        d["vram"] = {str(k): v for k, v in d["vram"].items()}
+        return d
+
+
+class NiriEvents(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.lock = threading.Lock()
+        self.counts: dict[str, int] = {}
+        self.proc = None
+
+    def run(self):
+        try:
+            self.proc = subprocess.Popen(["niri", "msg", "-j", "event-stream"], stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL)
+            for line in self.proc.stdout:
+                try:
+                    k = next(iter(json.loads(line)))
+                except Exception:
+                    k = "?"
+                with self.lock:
+                    self.counts[k] = self.counts.get(k, 0) + 1
+        except Exception:
+            pass
+
+    def take(self) -> dict:
+        with self.lock:
+            c, self.counts = self.counts, {}
+        return c
+
+
+def pw_top() -> list:
+    try:
+        out = subprocess.run(["pw-top", "-b", "-n", "2"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    lines = out.splitlines()
+    # second iteration only
+    starts = [i for i, l in enumerate(lines) if l.lstrip().startswith("S ") and "ID" in l]
+    body = lines[starts[-1] + 1:] if starts else lines
+    rows = []
+    for l in body:
+        p = l.split()
+        if len(p) >= 9 and p[0] in ("R", "I", "S", "C", "E"):
+            rows.append(l.strip())
+    return rows
+
+
+def main():
+    global stop
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUT_DIR / time.strftime("watch-%Y%m%d-%H%M%S.jsonl")
+    out = open(path, "w", buffering=1)
+    print(path, flush=True)
+    for s in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(s, lambda *_: globals().__setitem__("stop", True))
+    try:
+        os.nice(-0)  # stay at default priority
+    except OSError:
+        pass
+
+    gpu = Gpu()
+    ev = NiriEvents(); ev.start()
+    prev_cores, prev_misc = cpu_times()
+    prev_psi = psi()
+    prev_proc: dict[int, tuple[int, str]] = {}
+    prev_thr: dict[int, tuple[int, int]] = {}  # tid -> (jiffies, rq wait ns)
+    known_pids: set[int] = set()
+    first = True
+    t0 = time.monotonic()
+    next_fast = next_slow = t0
+    next_pw = t0 + 2
+    self_prev = os.times()
+    slow_prev_t = t0
+    out.write(json.dumps({"k": "meta", "t": time.time(), "ncpu": NCPU, "hz": HZ,
+                          "boot": rd("/proc/cmdline").strip(),
+                          "scx": rd("/sys/kernel/sched_ext/root/ops").strip()}) + "\n")
+    while not stop:
+        now = time.monotonic()
+        if now >= next_fast:
+            cores, misc = cpu_times()
+            load = []
+            for (tot, idle), (pt, pi) in zip(cores, prev_cores):
+                dt = tot - pt
+                load.append(round(100 * (1 - (idle - pi) / dt), 1) if dt > 0 else 0)
+            p = psi()
+            rec = {"k": "f", "t": round(time.time(), 3), "load": load, "mhz": mhz(),
+                   "forks": misc.get("processes", 0) - prev_misc.get("processes", 0),
+                   "ctxt": misc.get("ctxt", 0) - prev_misc.get("ctxt", 0),
+                   "irq": misc.get("intr", 0) - prev_misc.get("intr", 0),
+                   "run": misc.get("procs_running"), "blk": misc.get("procs_blocked"),
+                   "psi": {k: v - prev_psi.get(k, 0) for k, v in p.items()},
+                   "state": rd(str(RUN / "niri-game-mode/state")).strip()}
+            rec.update(gpu.fast())
+            out.write(json.dumps(rec, separators=(",", ":")) + "\n")
+            prev_cores, prev_misc, prev_psi = cores, misc, p
+            next_fast += FAST
+        if now >= next_slow:
+            dts = now - slow_prev_t
+            slow_prev_t = now
+            procs, threads, new = {}, {}, []
+            cur_proc, cur_thr = {}, {}
+            pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
+            for pid in pids:
+                st = rd(f"/proc/{pid}/stat")
+                if not st:
+                    continue
+                try:
+                    comm, state, j, nice, nthr, start, rss, cpu = parse_stat(st)
+                except Exception:
+                    continue
+                cur_proc[pid] = (j, comm)
+                pj = prev_proc.get(pid, (j, comm))[0]
+                pct = 100 * (j - pj) / HZ / dts
+                if pct >= 0.5:
+                    procs[str(pid)] = [comm, round(pct, 1), nice, nthr, rss * 4 >> 10]
+                if not first and pid not in known_pids:
+                    new.append([pid, comm, rd(f"/proc/{pid}/cmdline").replace("\0", " ")[:120]])
+                if comm.lower().startswith(WATCH):
+                    try:
+                        tids = os.listdir(f"/proc/{pid}/task")
+                    except OSError:
+                        tids = []
+                    for tid in tids:
+                        ts = rd(f"/proc/{pid}/task/{tid}/stat")
+                        if not ts:
+                            continue
+                        try:
+                            tc, tstate, tj, tn, _, _, _, tcpu = parse_stat(ts)
+                        except Exception:
+                            continue
+                        ss = rd(f"/proc/{pid}/task/{tid}/schedstat").split()
+                        wait = int(ss[1]) if len(ss) > 1 else 0
+                        slices = int(ss[2]) if len(ss) > 2 else 0
+                        t = int(tid)
+                        cur_thr[t] = (tj, wait, slices)
+                        ptj, pw_, psl = prev_thr.get(t, (tj, wait, slices))
+                        tp = 100 * (tj - ptj) / HZ / dts
+                        wms = (wait - pw_) / 1e6 / dts  # ms of run-queue wait per second
+                        if tp >= 1 or wms >= 5:
+                            threads[tid] = [pid, comm, tc, round(tp, 1), round(wms, 1), tn, tcpu,
+                                            round((slices - psl) / dts)]
+            known_pids = set(cur_proc)
+            prev_proc, prev_thr = cur_proc, cur_thr
+            mem = {}
+            for line in rd("/proc/meminfo").splitlines():
+                k, v = line.split(":")
+                if k in ("MemAvailable", "SwapTotal", "SwapFree", "Dirty", "Shmem"):
+                    mem[k] = int(v.split()[0]) >> 10
+            vm = {}
+            for line in rd("/proc/vmstat").splitlines():
+                k, v = line.split()
+                if k in ("pgfault", "pgmajfault", "pswpin", "pswpout", "compact_stall", "thp_fault_alloc"):
+                    vm[k] = int(v)
+            st = os.times()
+            selfcpu = 100 * ((st.user + st.system) - (self_prev.user + self_prev.system)) / dts
+            self_prev = st
+            rec = {"k": "s", "t": round(time.time(), 3), "procs": procs, "threads": threads,
+                   "new": new, "mem": mem, "vm": vm, "niri": ev.take(), "self": round(selfcpu, 2)}
+            rec.update(gpu.slow())
+            out.write(json.dumps(rec, separators=(",", ":")) + "\n")
+            first = False
+            next_slow += SLOW
+        if now >= next_pw:
+            out.write(json.dumps({"k": "pw", "t": round(time.time(), 3), "rows": pw_top()}) + "\n")
+            next_pw += PW
+        time.sleep(max(0.0, min(next_fast, next_slow, next_pw) - time.monotonic()))
+    if ev.proc:
+        ev.proc.terminate()
+    out.close()
+
+
+if __name__ == "__main__":
+    main()

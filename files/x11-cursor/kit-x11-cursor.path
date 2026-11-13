@@ -1,0 +1,10 @@
+[Unit]
+Description=angelOS kit: watch the cursor theme for X11's default cursor
+PartOf=graphical-session.target
+
+[Path]
+PathChanged=%h/.icons/default/index.theme
+Unit=kit-x11-cursor.service
+
+[Install]
+WantedBy=graphical-session.target

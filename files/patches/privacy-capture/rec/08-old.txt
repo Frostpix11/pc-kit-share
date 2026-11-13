@@ -1,0 +1,1 @@
+notify "Запись ${FPS} fps · ${CODEC_LABEL}"

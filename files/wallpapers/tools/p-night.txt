@@ -1,0 +1,11 @@
+Use your image generation tool to create ONE new image, then save it as ./night-raw.png in the current directory and print its path. Do not write code to draw it — use image generation.
+
+The attached image (day.png) is a pixel-art wallpaper: a mountain lake, a wooden cabin with a stone chimney on the right, a pier with a lantern post, a rowing boat, tall pines on the left, flowers in the grass. Redraw EXACTLY THE SAME PLACE, same composition, same framing, every object in the same position and size, in the same pixel-art style (same chunky square pixels, ~320x180 art pixels across, no anti-aliasing, no blur) — but at NIGHT:
+- deep indigo / navy sky, darker at the top, a soft lavender glow low over the far mountains, a few stars (single pixels), a thin crescent moon high on the left side of the sky;
+- clouds still there but dark blue-grey with faint moonlit rims;
+- the lake dark blue, the mountain reflections dim, a pale moon glint on the water;
+- the cabin window and the pier lantern glowing warm amber-orange, with their warm reflections in the water; this warm light is the brightest thing in the picture;
+- pines and grass very dark teal-blue, flowers barely visible;
+- calm, cozy, dreamy, the same soft pastel-modern palette mood (indigo, periwinkle, lavender, amber accents).
+No people, no text, no border. Same 16:9 aspect as the input.
+Output: only ./night-raw.png, then print its absolute path.

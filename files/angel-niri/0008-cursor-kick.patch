@@ -1,0 +1,183 @@
+From df1c1f86db0e7f6be574c1d62eb75acae67b2165 Mon Sep 17 00:00:00 2001
+From: celestia <c@l>
+Date: Tue, 3 Nov 2026 12:06:18 +0200
+Subject: [PATCH] =?UTF-8?q?0008:=20cursor-kick=20=E2=80=94=20the=20living?=
+ =?UTF-8?q?=20pointer=20hops=20on=20the=20music's=20kicks?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ niri-config/src/binds.rs |  3 +++
+ niri-ipc/src/lib.rs      | 10 +++++++
+ src/cursor_fx.rs         | 57 ++++++++++++++++++++++++++++++++++++++--
+ src/input/mod.rs         |  5 ++++
+ 4 files changed, 73 insertions(+), 2 deletions(-)
+
+diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
+index 728a01b1..1a882b06 100644
+--- a/niri-config/src/binds.rs
++++ b/niri-config/src/binds.rs
+@@ -326,6 +326,8 @@ pub enum Action {
+     #[knuffel(skip)]
+     WindowPulse(f64, u32),
+     #[knuffel(skip)]
++    CursorKick(f64),
++    #[knuffel(skip)]
+     SetDitherWheel(bool),
+     #[knuffel(skip)]
+     SetCastOnlyLayer(String, bool),
+@@ -767,6 +769,7 @@ impl From<niri_ipc::Action> for Action {
+             niri_ipc::Action::ShowDesktop { output, release } => Self::ShowDesktop(output, release),
+             niri_ipc::Action::SetDeskZero { on } => Self::SetDeskZero(on),
+             niri_ipc::Action::WindowPulse { px, ms } => Self::WindowPulse(px, ms),
++            niri_ipc::Action::CursorKick { strength } => Self::CursorKick(strength),
+             niri_ipc::Action::SetDitherWheel { on } => Self::SetDitherWheel(on),
+             niri_ipc::Action::MinimizeWindow { id, now: true } => Self::MinimizeWindowNow(id),
+             niri_ipc::Action::MinimizeWindow { id: None, .. } => Self::MinimizeWindow,
+diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
+index 2c106409..8774c543 100644
+--- a/niri-ipc/src/lib.rs
++++ b/niri-ipc/src/lib.rs
+@@ -896,6 +896,16 @@ pub enum Action {
+         #[serde(default)]
+         ms: u32,
+     },
++    /// Make the living pointer hop on a beat of the music (angel-niri cursor_fx): it grows from
++    /// its tip and its shadow drops away, then springs back. `strength` 0 to 3; 0 is a probe
++    /// (accepted, nothing moves). Only while the living pointer is on.
++    #[cfg_attr(feature = "clap", clap(about = "Make the living pointer hop on a beat"))]
++    CursorKick {
++        /// How high it hops, 0 to 3 (1 = normal).
++        #[cfg_attr(feature = "clap", arg(long, default_value_t = 1.))]
++        #[serde(default)]
++        strength: f64,
++    },
+     /// Keep a clean desk above desk 1 and number the desks from 0 (angel-niri): the empty
+     /// workspace on top is desk 0, a window put there makes it desk 1.
+     #[cfg_attr(feature = "clap", clap(about = "Keep a clean desk 0 above desk 1"))]
+diff --git a/src/cursor_fx.rs b/src/cursor_fx.rs
+index c8623be2..192da3de 100644
+--- a/src/cursor_fx.rs
++++ b/src/cursor_fx.rs
+@@ -40,6 +40,12 @@ const POP: f64 = 0.12;
+ const POP_MS: f64 = 240.;
+ /// Ring: grows to RING_REACH × the arrow's height and fades over RING_MS.
+ const RING_MS: f64 = 480.;
++/// A beat (cursor-kick): the pointer grows this much from its tip at strength 1 and its shadow
++/// drops this much further away, rising fast and easing back over KICK_MS.
++const KICK_GROW: f64 = 0.22;
++const KICK_DROP: f64 = 0.9;
++const KICK_MS: f64 = 220.;
++const KICK_RISE: f64 = 0.25;
+ const RING_REACH: f64 = 1.25;
+ const RING_STEPS: u32 = 28;
+ /// The blur: the arrow is smeared over BLUR_SHUTTER × the path of the last frame.
+@@ -110,6 +116,9 @@ struct State {
+     fx: Option<Fx>,
+     /// the last client cursor picture seen (its key), so a change of it pops like a shape change
+     surface_key: Option<u64>,
++    /// the last beat (cursor-kick): when and how hard
++    kick_at: Option<Duration>,
++    kick_amp: f64,
+ }
+ 
+ /// What to draw this frame.
+@@ -154,6 +163,8 @@ thread_local! {
+         ripples: vec![],
+         fx: None,
+         surface_key: None,
++        kick_at: None,
++        kick_amp: 0.,
+     });
+     static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
+ }
+@@ -190,6 +201,43 @@ pub fn is_on() -> bool {
+     STATE.with_borrow(|s| s.params.on)
+ }
+ 
++/// A beat of the music: the pointer hops (grows from its tip, its shadow drops away). A kick
++/// over one still going starts from where that one is, never lower. Returns whether it moves.
++pub fn kick(strength: f64, now: Duration) -> bool {
++    let strength = finite(strength, 0.).clamp(0., 3.);
++    STATE.with_borrow_mut(|s| {
++        if !s.params.on || strength <= 0. {
++            return false;
++        }
++        let amp = strength.max(kick_level(s, now));
++        s.kick_at = Some(now);
++        s.kick_amp = amp;
++        true
++    })
++}
++
++/// How far up the current hop is, 0 when none (in units of strength).
++fn kick_level(s: &State, now: Duration) -> f64 {
++    let Some(at) = s.kick_at else {
++        return 0.;
++    };
++    let Some(dt) = now.checked_sub(at) else {
++        return 0.;
++    };
++    let t = dt.as_secs_f64() * 1000. / KICK_MS;
++    if t >= 1. {
++        return 0.;
++    }
++    let k = if t < KICK_RISE {
++        let x = t / KICK_RISE;
++        1. - (1. - x) * (1. - x)
++    } else {
++        let x = (t - KICK_RISE) / (1. - KICK_RISE);
++        (1. - x) * (1. - x)
++    };
++    s.kick_amp * k
++}
++
+ /// A mouse button went down or up.
+ pub fn button(pressed: bool, now: Duration) {
+     STATE.with_borrow_mut(|s| {
+@@ -287,11 +335,15 @@ pub fn update(
+             .map_or(0., |t| (t * PI).sin() * DIP * p.bounce.min(2.));
+         let pop = progress(s.pop_at, POP_MS).map_or(0., |t| (t * PI).sin() * POP);
+         let lift = s.lift.x.clamp(0., 1.);
++        let hop = kick_level(s, now);
+ 
+-        let scale = ((1. - dip) * (1. + pop) * (1. + LIFT_GROW * lift)).max(0.6);
++        let scale =
++            ((1. - dip) * (1. + pop) * (1. + LIFT_GROW * lift) * (1. + KICK_GROW * hop)).max(0.6);
+ 
+         let pressed = dip / DIP.max(1e-6);
+-        let flat = (1. - (1. - SHADOW_PRESSED) * pressed.clamp(0., 1.)) * p.shadow_dist;
++        let flat = (1. - (1. - SHADOW_PRESSED) * pressed.clamp(0., 1.))
++            * (1. + KICK_DROP * hop)
++            * p.shadow_dist;
+         let sx = (SHADOW_REST.0 + (SHADOW_LIFT.0 - SHADOW_REST.0) * lift) * flat;
+         let sy = (SHADOW_REST.1 + (SHADOW_LIFT.1 - SHADOW_REST.1) * lift) * flat;
+         let sa = (SHADOW_ALPHA * (1. - 0.12 * lift + 0.10 * pressed) * p.shadow).min(0.9);
+@@ -341,6 +393,7 @@ pub fn animating(now: Duration) -> bool {
+             || s.pending_click
+             || busy(s.press_at, BOUNCE_MS)
+             || busy(s.pop_at, POP_MS)
++            || busy(s.kick_at, KICK_MS)
+     })
+ }
+ 
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index aac51cdf..56efbe6d 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -1121,6 +1121,11 @@ impl State {
+                 crate::window_pulse::pulse(px, ms);
+                 self.niri.queue_redraw_all();
+             }
++            Action::CursorKick(strength) => {
++                if crate::cursor_fx::kick(strength, self.niri.clock.now()) {
++                    self.niri.queue_redraw_all();
++                }
++            }
+             Action::SetDeskZero(on) => {
+                 if crate::desk_zero::is_on() != on {
+                     crate::desk_zero::set(on);
+-- 
+2.56.0
+

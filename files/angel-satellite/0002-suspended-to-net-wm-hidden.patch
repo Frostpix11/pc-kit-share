@@ -1,0 +1,102 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index c98c68e..b8cf41c 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -19,6 +19,12 @@ pub trait XConnection: Sized + 'static {
+ 
+     fn set_window_dims(&mut self, window: x::Window, dims: PendingSurfaceState) -> bool;
+     fn set_fullscreen(&mut self, window: x::Window, fullscreen: bool);
++    /// angel-satellite: _NET_WM_STATE with HIDDEN while the compositor says the window is
++    /// suspended (nobody sees it), so X11 apps (Chromium/Electron) stop drawing.
++    fn set_wm_state(&mut self, window: x::Window, fullscreen: bool, hidden: bool) {
++        let _ = hidden;
++        self.set_fullscreen(window, fullscreen);
++    }
+     fn focus_window(&mut self, window: x::Window, output_name: Option<String>);
+     fn send_take_focus(&mut self, window: x::Window);
+     fn close_window(&mut self, window: x::Window);
+diff --git a/src/server/event.rs b/src/server/event.rs
+index fafc2df..b59771f 100644
+--- a/src/server/event.rs
++++ b/src/server/event.rs
+@@ -432,13 +432,23 @@ impl SurfaceEvents {
+                 let mut role = data.get::<&mut SurfaceRole>().unwrap();
+                 if let SurfaceRole::Toplevel(Some(toplevel)) = &mut *role {
+                     let prev_fs = toplevel.fullscreen;
+-                    toplevel.fullscreen =
+-                        states.contains(&(u32::from(xdg_toplevel::State::Fullscreen) as u8));
+-                    if toplevel.fullscreen != prev_fs {
+-                        state.connection.set_fullscreen(
++                    let prev_susp = toplevel.suspended;
++                    // the states are u32s in native byte order
++                    let has = |st: xdg_toplevel::State| {
++                        states
++                            .chunks_exact(4)
++                            .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == u32::from(st))
++                    };
++                    toplevel.fullscreen = has(xdg_toplevel::State::Fullscreen);
++                    toplevel.suspended = has(xdg_toplevel::State::Suspended);
++                    if toplevel.fullscreen != prev_fs || toplevel.suspended != prev_susp {
++                        state.connection.set_wm_state(
+                             *data.get::<&x::Window>().unwrap(),
+                             toplevel.fullscreen,
++                            toplevel.suspended,
+                         );
++                    }
++                    if toplevel.fullscreen != prev_fs {
+                         if let Some(decorations) = toplevel.decoration.satellite.as_mut() {
+                             decorations.handle_fullscreen(toplevel.fullscreen);
+                         }
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index 2a0f3b6..7416d0b 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -301,6 +301,7 @@ struct ToplevelData {
+     toplevel: XdgToplevel,
+     xdg: XdgSurfaceData,
+     fullscreen: bool,
++    suspended: bool,
+     decoration: decoration::DecorationsData,
+ }
+ 
+@@ -1820,6 +1821,7 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
+             },
+             toplevel,
+             fullscreen: false,
++            suspended: false,
+             decoration: DecorationsData {
+                 wl: wl_decoration,
+                 satellite: sat_decoration,
+diff --git a/src/xstate/mod.rs b/src/xstate/mod.rs
+index 09ee3c9..d569b72 100644
+--- a/src/xstate/mod.rs
++++ b/src/xstate/mod.rs
+@@ -1479,6 +1479,28 @@ impl XConnection for RealConnection {
+         true
+     }
+ 
++    fn set_wm_state(&mut self, window: x::Window, fullscreen: bool, hidden: bool) {
++        let mut data = Vec::with_capacity(2);
++        if fullscreen {
++            data.push(self.atoms.wm_fullscreen);
++        }
++        if hidden {
++            data.push(self.atoms.wm_hidden);
++        }
++        if let Err(e) = self
++            .connection
++            .send_and_check_request(&x::ChangeProperty::<x::Atom> {
++                mode: x::PropMode::Replace,
++                window,
++                property: self.atoms.net_wm_state,
++                r#type: x::ATOM_ATOM,
++                data: &data,
++            })
++        {
++            warn!("Failed to set _NET_WM_STATE on {window:?} ({e})");
++        }
++    }
++
+     fn set_fullscreen(&mut self, window: x::Window, fullscreen: bool) {
+         let data = if fullscreen {
+             std::slice::from_ref(&self.atoms.wm_fullscreen)

@@ -1,0 +1,55 @@
+# kit-patch privacy: rec-switch.py asks for the other recorder (a fullscreen game came or went)
+if [[ "${1:-}" == --switch ]]; then
+  exec 9>"$PARTS.lock"; flock -w 10 9 || exit 0
+  want="${2:-wf}"
+  [[ $want == gsr && $GSR != 1 ]] && exit 0
+  running && [[ ! -f "$PAUSED" && -f "$OUTFILE_META" ]] || exit 0
+  cur=$(awk -F'\t' '$1=="start"{k=$3} END{print k}' "$EVENTS" 2>/dev/null)
+  [[ "$cur" == "$want" ]] && exit 0
+  outfile=$(<"$OUTFILE_META")
+  n=$(($(wc -l <"$PARTS") + 1))
+  file="$(dirname "$outfile")/.$(basename "${outfile%.mp4}")-$n.mp4"
+  t0=$(now_ms)
+  newpid=$(spawn_piece "$file" "$want")
+  # the new one writes before the old one stops: no hole. Its file appears as it starts to
+  # record (gpu-screen-recorder then keeps ~2 s in memory: don't wait for the bytes). Both then
+  # run 0.8 s more: glue matches their sound over that overlap (a few beats to tell them apart)
+  for _ in $(seq 1 60); do
+    [[ -e "$file" ]] && break
+    kill -0 "$newpid" 2>/dev/null || break
+    sleep 0.05
+  done
+  sleep 0.8
+  # rec-switch.py may have changed its mind meanwhile (out of the game again): no swap
+  if [[ -f "$PARTS.want" && "$(<"$PARTS.want")" != "$want" ]]; then
+    kill -INT "$newpid" 2>/dev/null || true
+    for _ in $(seq 1 50); do kill -0 "$newpid" 2>/dev/null || break; sleep 0.1; done
+    kill -KILL "$newpid" 2>/dev/null || true
+    rm -f "$file"
+    echo "switch to $want called off" >>/tmp/niri-record-region.log
+    exit 0
+  fi
+  if ! kill -0 "$newpid" 2>/dev/null; then
+    rm -f "$file"
+    echo "switch to $want failed: the recorder did not start" >>/tmp/niri-record-region.log
+    exit 0
+  fi
+  echo "$file" >>"$PARTS"
+  printf 'start\t%s\t%s\t%s\n' "$file" "$want" "$t0" >>"$EVENTS"
+  oldpid=$(<"$PIDFILE"); began=$(stat -c %Y "$PIDFILE")
+  oldfile=$(awk -F'\t' '$1=="start"{p=f; f=$2} END{print p}' "$EVENTS")
+  # the running recorder is the new one before the old one goes (the watcher and the shell look)
+  acc=0; [[ -f "$ACC" ]] && acc=$(<"$ACC")
+  echo $((acc + ($(date +%s) - began) * 1000)) >"$ACC"
+  echo "$newpid" >"$PIDFILE"
+  printf 'end\t%s\t%s\n' "$oldfile" "$(now_ms)" >>"$EVENTS"
+  kill -INT "$oldpid" 2>/dev/null || true
+  for _ in $(seq 1 100); do kill -0 "$oldpid" 2>/dev/null || break; sleep 0.1; done
+  kill -KILL "$oldpid" 2>/dev/null || true
+  tell_shell
+  exit 0
+fi
+
+if [[ $PAUSE == 1 ]]; then
+  exec 9>"$PARTS.lock"; flock -w 10 9 || true  # kit-patch privacy: not in the middle of a swap
+  if [[ -f "$PAUSED" ]]; then

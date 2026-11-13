@@ -1,0 +1,2 @@
+if [[ $PAUSE == 1 ]]; then
+  if [[ -f "$PAUSED" ]]; then

@@ -1,0 +1,59 @@
+{
+  "survey_version": 2,
+  "context": "AngelOS with Mac keyboard and touchpad; appearance follows current AngelOS theme, not Golden Gate specifically",
+  "answers": {
+    "shortcuts": "ctrl",
+    "file_opening": "preview",
+    "saving": "manual_drafts",
+    "markdown": "toggle_preview",
+    "horizontal_gesture": "tabs",
+    "notes": "простота и понятность а так же удобная функциональность у тебя есть доступ ко всем данным мира так что собрать что то свое и уютное думаю не будет проблемой ",
+    "features": [
+      "quick_open",
+      "folder_search",
+      "favorites",
+      "outline",
+      "focus",
+      "spelling",
+      "quick_note"
+    ]
+  },
+  "labels": {
+    "shortcuts": {
+      "mac": "Как на Mac",
+      "both": "Поддерживать оба варианта",
+      "ctrl": "Привычные сочетания с Ctrl"
+    },
+    "file_opening": {
+      "preview": "Один клик — посмотреть, двойной — оставить вкладку",
+      "single_tab": "Один клик — сразу открыть отдельную вкладку",
+      "double_tab": "Один клик — выделить, двойной — открыть"
+    },
+    "saving": {
+      "manual_drafts": "Сохраняю сам, Typer страхует черновиками",
+      "autosave": "Пусть сохраняет сам",
+      "per_folder": "Для заметок автоматически, для остальных вручную"
+    },
+    "markdown": {
+      "toggle_preview": "Редактирую текст, красивый просмотр — по кнопке",
+      "live_preview": "Форматирование видно прямо при наборе",
+      "plain": "Пока достаточно простого текста"
+    },
+    "horizontal_gesture": {
+      "history": "Возвращаться к предыдущему тексту",
+      "tabs": "Переключать соседние вкладки",
+      "none": "Не переключать документы свайпами"
+    }
+  },
+  "feature_labels": {
+    "quick_open": "Быстро найти файл по имени",
+    "folder_search": "Искать текст во всей папке",
+    "favorites": "Закреплять важные файлы и папки",
+    "outline": "Переходить по заголовкам",
+    "pinch_zoom": "Менять размер текста жестом щипка",
+    "focus": "Убирать панели одним действием",
+    "spelling": "Проверять орфографию",
+    "quick_note": "Быстро записать мысль из панели angelOS"
+  },
+  "implementation_authorized": false
+}

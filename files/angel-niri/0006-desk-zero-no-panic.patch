@@ -1,0 +1,69 @@
+From 7ce6bb95a8d6c7e001aeb8493484f5ebe50cc0b1 Mon Sep 17 00:00:00 2001
+From: celestia <c@l>
+Date: Tue, 3 Nov 2026 11:48:17 +0200
+Subject: [PATCH] 0006: desk 0 healed, not asserted (panic on Desktop<->strip
+ switch with desk zero on)
+
+---
+ src/layout/mod.rs     |  5 +++--
+ src/layout/monitor.rs | 17 ++++++++++++++---
+ 2 files changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/src/layout/mod.rs b/src/layout/mod.rs
+index 041d39f0..a1c646ab 100644
+--- a/src/layout/mod.rs
++++ b/src/layout/mod.rs
+@@ -1434,12 +1434,13 @@ impl<W: LayoutElement> Layout<W> {
+ 
+                             // Special case handling when empty_workspace_above_first is set and all
+                             // workspaces are empty.
++                            // angel-niri: checked, not asserted (desk_zero.rs)
+                             if mon.options.layout.empty_workspace_above_first
+                                 && mon.workspaces.len() == 2
+                                 && mon.workspace_switch.is_none()
++                                && !mon.workspaces[0].has_windows_or_name()
++                                && !mon.workspaces[1].has_windows_or_name()
+                             {
+-                                assert!(!mon.workspaces[0].has_windows_or_name());
+-                                assert!(!mon.workspaces[1].has_windows_or_name());
+                                 mon.workspaces.remove(1);
+                                 mon.active_workspace_idx = 0;
+                             }
+diff --git a/src/layout/monitor.rs b/src/layout/monitor.rs
+index 44f94eb3..165350ed 100644
+--- a/src/layout/monitor.rs
++++ b/src/layout/monitor.rs
+@@ -664,6 +664,14 @@ impl<W: LayoutElement> Monitor<W> {
+     pub fn clean_up_workspaces(&mut self) {
+         assert!(self.workspace_switch.is_none());
+ 
++        // angel-niri (desk_zero.rs): desk 0 got a window some way that put no new empty desk on
++        // top (stacking, minimize): heal it here instead of tripping the assertions below.
++        if self.options.layout.empty_workspace_above_first
++            && self.workspaces[0].has_windows_or_name()
++        {
++            self.add_workspace_top();
++        }
++
+         let range_start = if self.options.layout.empty_workspace_above_first {
+             1
+         } else {
+@@ -684,9 +692,12 @@ impl<W: LayoutElement> Monitor<W> {
+ 
+         // Special case handling when empty_workspace_above_first is set and all workspaces
+         // are empty.
+-        if self.options.layout.empty_workspace_above_first && self.workspaces.len() == 2 {
+-            assert!(!self.workspaces[0].has_windows_or_name());
+-            assert!(!self.workspaces[1].has_windows_or_name());
++        // angel-niri: checked, not asserted (a panic here takes the whole session down)
++        if self.options.layout.empty_workspace_above_first
++            && self.workspaces.len() == 2
++            && !self.workspaces[0].has_windows_or_name()
++            && !self.workspaces[1].has_windows_or_name()
++        {
+             self.workspaces.remove(1);
+             self.active_workspace_idx = 0;
+         }
+-- 
+2.56.0
+

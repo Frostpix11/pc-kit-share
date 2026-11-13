@@ -1,0 +1,62 @@
+# kit-patch privacy: two recorders. wf-recorder records through niri (screencopy): privacy mode's
+# block-out reaches every frame and can be switched mid-recording. gpu-screen-recorder grabs the
+# screen past niri (KMS) and costs a game next to nothing: it records while a fullscreen game has
+# the focus. kit rec-switch.py watches niri and swaps them on the fly (--switch below: the new one
+# starts before the old one stops; the overlap is cut when the pieces are glued)
+KITREC="$HOME/.local/share/angelos-kit/patches/privacy-capture/rec-switch.py"
+EVENTS="$PARTS.events"
+now_ms() { date +%s%3N; }
+# a recorder for a piece (kind wf|gsr), in the background; prints its pid
+spawn_piece() {
+  local file="$1" kind="$2"
+  if [[ $kind == gsr ]]; then
+    # the selector's "X,Y WxH" as gpu-screen-recorder's WxH+X+Y
+    local x y w h
+    read -r x y w h < <(tr ',x' '  ' <"$GEOM")
+    gpu-screen-recorder -w "${w}x${h}+${x}+${y}" -f "$FPS" -c mp4 "${GENC[@]}" -ac aac -q high -v no "${GAUD[@]}" -o "$file" \
+      >>/tmp/niri-record-region.log 2>&1 9>&- </dev/null &
+  else
+    # BT.709 limited, as gpu-screen-recorder writes it: the pieces join as they are. One thread:
+    # ~1 core at 1080p60 (measured 03.11; on all threads wf-recorder burnt two)
+    local col=()
+    [[ $CODEC != vaapi ]] && col=(-x yuv420p -F "scale=out_color_matrix=bt709:out_range=tv:threads=1" -p colorspace=bt709 -p color_primaries=bt709 -p color_trc=bt709 -p color_range=tv)
+    wf-recorder -g "$(<"$GEOM")" -f "$file" -r "$FPS" -D "${ENC[@]}" "${col[@]}" "${AUD[@]}" \
+      >>/tmp/niri-record-region.log 2>&1 9>&- </dev/null &
+  fi
+  local pid=$!
+  disown || true
+  echo "$pid"
+}
+# Settings → Screenshots and recording → «Приватность в записи экрана» (on unless switched off):
+# off, gpu-screen-recorder all the time, as the author's script does
+rec_privacy() {
+  python3 - <<'PY' 2>/dev/null || echo 1
+import json, os
+base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+try:
+    c = json.load(open(os.path.join(base, "angelos/settings.json"))).get("capture") or {}
+except Exception:
+    c = {}
+print(0 if c.get("recordPrivacy") is False else 1)
+PY
+}
+REC_PRIVACY=$(rec_privacy)
+piece_kind() {
+  if [[ $GSR == 1 && ( $REC_PRIVACY == 0 || "$(python3 "$KITREC" kind 2>/dev/null)" == gsr ) ]]; then echo gsr; else echo wf; fi
+}
+rec_label() {
+  if [[ ${LAST_KIND:-wf} == wf ]]; then echo "wf-recorder · приватность"
+  elif [[ $REC_PRIVACY == 0 ]]; then echo "gpu-screen-recorder · без приватности"
+  else echo "игра · gpu-screen-recorder"; fi
+}
+start_piece() {
+  local file="$1"
+  LAST_KIND=$(piece_kind)
+  spawn_piece "$file" "$LAST_KIND" >"$PIDFILE"
+  echo "$file" >>"$PARTS"
+  printf 'start\t%s\t%s\t%s\n' "$file" "$LAST_KIND" "$(now_ms)" >>"$EVENTS"
+  if [[ -f "$KITREC" && $REC_PRIVACY == 1 ]]; then
+    python3 "$KITREC" watch >/dev/null 2>&1 9>&- </dev/null &
+    disown || true
+  fi
+}

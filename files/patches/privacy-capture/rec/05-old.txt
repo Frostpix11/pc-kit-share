@@ -1,0 +1,2 @@
+  # more than one piece (it was paused): glued into the first, without re-encoding
+  if [[ -f "$PARTS" && $(wc -l <"$PARTS") -gt 1 ]]; then

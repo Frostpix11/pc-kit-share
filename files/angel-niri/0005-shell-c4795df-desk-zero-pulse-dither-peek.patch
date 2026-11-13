@@ -1,0 +1,887 @@
+diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
+index 60739b5b..728a01b1 100644
+--- a/niri-config/src/binds.rs
++++ b/niri-config/src/binds.rs
+@@ -320,7 +320,13 @@ pub enum Action {
+     #[knuffel(skip)]
+     SetHideWindowsLayer(String, bool),
+     #[knuffel(skip)]
+-    ShowDesktop(Option<String>),
++    ShowDesktop(Option<String>, bool),
++    #[knuffel(skip)]
++    SetDeskZero(bool),
++    #[knuffel(skip)]
++    WindowPulse(f64, u32),
++    #[knuffel(skip)]
++    SetDitherWheel(bool),
+     #[knuffel(skip)]
+     SetCastOnlyLayer(String, bool),
+     #[knuffel(skip)]
+@@ -758,7 +764,10 @@ impl From<niri_ipc::Action> for Action {
+             niri_ipc::Action::SetHideWindowsLayer { namespace, on } => {
+                 Self::SetHideWindowsLayer(namespace, on)
+             }
+-            niri_ipc::Action::ShowDesktop { output } => Self::ShowDesktop(output),
++            niri_ipc::Action::ShowDesktop { output, release } => Self::ShowDesktop(output, release),
++            niri_ipc::Action::SetDeskZero { on } => Self::SetDeskZero(on),
++            niri_ipc::Action::WindowPulse { px, ms } => Self::WindowPulse(px, ms),
++            niri_ipc::Action::SetDitherWheel { on } => Self::SetDitherWheel(on),
+             niri_ipc::Action::MinimizeWindow { id, now: true } => Self::MinimizeWindowNow(id),
+             niri_ipc::Action::MinimizeWindow { id: None, .. } => Self::MinimizeWindow,
+             niri_ipc::Action::MinimizeWindow { id: Some(id), .. } => Self::MinimizeWindowById(id),
+diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
+index abf5b76a..2c106409 100644
+--- a/niri-ipc/src/lib.rs
++++ b/niri-ipc/src/lib.rs
+@@ -874,6 +874,37 @@ pub enum Action {
+         #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
+         on: bool,
+     },
++    /// Alt+wheel over a window makes it see-through in dots (angel-niri): turn it on or off.
++    /// While on, apps don't get Alt+wheel; fullscreen windows stay whole.
++    #[cfg_attr(feature = "clap", clap(about = "Alt+wheel makes a window see-through in dots"))]
++    SetDitherWheel {
++        /// On (`true`, the default) or off (every window whole again).
++        #[serde(default = "default_true")]
++        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
++        on: bool,
++    },
++    /// Make the windows spring a few pixels for a moment (angel-niri, angelOS's kick of the
++    /// music); fullscreen windows stay put.
++    #[cfg_attr(feature = "clap", clap(about = "Make the windows spring for a moment"))]
++    WindowPulse {
++        /// Pixels each side grows by.
++        #[cfg_attr(feature = "clap", arg(long, default_value_t = 2.))]
++        #[serde(default)]
++        px: f64,
++        /// How long the spring lasts, ms.
++        #[cfg_attr(feature = "clap", arg(long, default_value_t = 180))]
++        #[serde(default)]
++        ms: u32,
++    },
++    /// Keep a clean desk above desk 1 and number the desks from 0 (angel-niri): the empty
++    /// workspace on top is desk 0, a window put there makes it desk 1.
++    #[cfg_attr(feature = "clap", clap(about = "Keep a clean desk 0 above desk 1"))]
++    SetDeskZero {
++        /// On (`true`, the default) or off.
++        #[serde(default = "default_true")]
++        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
++        on: bool,
++    },
+     /// Show the desktop (angel-niri, while stacking): the windows part to the side edges and come
+     /// back with the same call, a window focused or a new one.
+     #[cfg_attr(feature = "clap", clap(about = "Show the desktop"))]
+@@ -882,6 +913,11 @@ pub enum Action {
+         #[cfg_attr(feature = "clap", arg(long))]
+         #[serde(default)]
+         output: Option<String>,
++        /// The key that showed it is let go (angel-niri, angelOS's held Mod+D): held long, the
++        /// windows come back (a peek); a tap leaves the desktop shown.
++        #[cfg_attr(feature = "clap", arg(long))]
++        #[serde(default)]
++        release: bool,
+     },
+     /// Show a layer-shell namespace only to screencasts (angel-niri).
+     ///
+diff --git a/src/desk_zero.rs b/src/desk_zero.rs
+new file mode 100644
+index 00000000..697a6725
+--- /dev/null
++++ b/src/desk_zero.rs
+@@ -0,0 +1,58 @@
++//! angel-niri: the clean desk above desk 1 (`niri msg action set-desk-zero`), what angelOS's
++//! shell asks for at start (services/Niri.qml: SetDeskZero). niri's own
++//! `empty-workspace-above-first` keeps the empty workspace on top; on top of that this numbers the
++//! workspaces from 0 instead of 1 while it is on, so that one is desk 0 and the desks with windows
++//! stay 1…N — in the IPC (`idx`), in index references (`focus-workspace 3`,
++//! `move-column-to-workspace 0`) and in the labels. A window put on desk 0 makes it desk 1 (same
++//! id, idx 1) and a new empty desk 0 comes on top: the shell sees that as deskZeroTaken.
++//! Written to the shell's contract (angelOS c4795df), before the author published his own build.
++
++use std::sync::atomic::{AtomicBool, Ordering};
++
++static ON: AtomicBool = AtomicBool::new(false);
++
++pub fn set(on: bool) {
++    ON.store(on, Ordering::Relaxed);
++}
++
++pub fn is_on() -> bool {
++    ON.load(Ordering::Relaxed)
++}
++
++/// A 1-based (desk 0 off) or 0-based (desk 0 on) index from a reference → the position in the
++/// output's workspace list.
++pub fn index_to_pos(index: u8) -> usize {
++    if is_on() {
++        usize::from(index)
++    } else {
++        usize::from(index.saturating_sub(1))
++    }
++}
++
++/// The position in the output's workspace list → the number shown and reported.
++pub fn pos_to_index(pos: usize) -> usize {
++    if is_on() {
++        pos
++    } else {
++        pos + 1
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn numbering_follows_the_switch() {
++        set(false);
++        assert_eq!(index_to_pos(1), 0);
++        assert_eq!(index_to_pos(0), 0);
++        assert_eq!(pos_to_index(0), 1);
++        set(true);
++        assert_eq!(index_to_pos(0), 0);
++        assert_eq!(index_to_pos(1), 1);
++        assert_eq!(pos_to_index(0), 0);
++        assert_eq!(pos_to_index(2), 2);
++        set(false);
++    }
++}
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index 820d216a..aac51cdf 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -1106,8 +1106,29 @@ impl State {
+                 crate::hide_windows::set(namespace, on);
+                 self.niri.queue_redraw_all();
+             }
+-            Action::ShowDesktop(output) => {
+-                self.show_desktop(output);
++            Action::ShowDesktop(output, release) => {
++                if release {
++                    self.show_desktop_release();
++                } else {
++                    self.show_desktop(output);
++                }
++            }
++            Action::SetDitherWheel(on) => {
++                crate::window_dither::set_on(on);
++                self.niri.queue_redraw_all();
++            }
++            Action::WindowPulse(px, ms) => {
++                crate::window_pulse::pulse(px, ms);
++                self.niri.queue_redraw_all();
++            }
++            Action::SetDeskZero(on) => {
++                if crate::desk_zero::is_on() != on {
++                    crate::desk_zero::set(on);
++                    // the options come from the config with desk 0 or'ed in (Options::from_config)
++                    let config = self.niri.config.clone();
++                    self.niri.layout.update_config(&config.borrow());
++                    self.niri.queue_redraw_all();
++                }
+             }
+             Action::SetCastPause(on, image, background) => {
+                 if let Err(err) =
+@@ -1973,14 +1994,14 @@ impl State {
+                 self.niri.queue_redraw_all();
+             }
+             Action::MoveWorkspaceToIndex(new_idx) => {
+-                let new_idx = new_idx.saturating_sub(1);
++                let new_idx = crate::desk_zero::index_to_pos(new_idx as u8);
+                 self.niri.layout.move_workspace_to_idx(None, new_idx);
+                 // FIXME: granular
+                 self.niri.queue_redraw_all();
+             }
+             Action::MoveWorkspaceToIndexByRef { new_idx, reference } => {
+                 if let Some(res) = self.niri.find_output_and_workspace_index(reference) {
+-                    let new_idx = new_idx.saturating_sub(1);
++                    let new_idx = crate::desk_zero::index_to_pos(new_idx as u8);
+                     self.niri.layout.move_workspace_to_idx(Some(res), new_idx);
+                     // FIXME: granular
+                     self.niri.queue_redraw_all();
+@@ -3661,6 +3682,36 @@ impl State {
+             }
+         }
+ 
++        // angel-niri (window_dither.rs): Alt+wheel over a window, see-through in dots; fullscreen
++        // windows keep their Alt+wheel
++        if source == AxisSource::Wheel
++            && crate::window_dither::is_on()
++            && !should_handle_in_overview
++            && !is_mru_open
++        {
++            let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
++            if mods.alt && !(mods.ctrl || mods.shift || mods.logo) {
++                let under = self.niri.contents_under(pointer.current_location()).window;
++                let target = under.and_then(|(window, _)| {
++                    (self.niri.layout.windows())
++                        .find(|(_, m)| m.window == window)
++                        .filter(|(_, m)| !m.sizing_mode().is_fullscreen())
++                        .map(|(_, m)| m.id().get())
++                });
++                if let Some(id) = target {
++                    let notch = vertical_amount_v120
++                        .map(|v| (v / 120.).round() as i32)
++                        .filter(|n| *n != 0)
++                        .unwrap_or(vertical_amount.signum() as i32);
++                    if notch != 0 {
++                        crate::window_dither::wheel(id, notch);
++                        self.niri.queue_redraw_all();
++                    }
++                    return;
++                }
++            }
++        }
++
+         // Handle wheel scroll bindings.
+         if source == AxisSource::Wheel {
+             // If we have a scroll bind with current modifiers, then accumulate and don't pass to
+diff --git a/src/ipc/server.rs b/src/ipc/server.rs
+index a965bb6b..20af3d3c 100644
+--- a/src/ipc/server.rs
++++ b/src/ipc/server.rs
+@@ -657,7 +657,7 @@ impl State {
+ 
+             // Check for any changes that we can't signal as individual events.
+             let output_name = mon.map(|mon| mon.output_name());
+-            if ipc_ws.idx != u8::try_from(ws_idx + 1).unwrap_or(u8::MAX)
++            if ipc_ws.idx != u8::try_from(crate::desk_zero::pos_to_index(ws_idx)).unwrap_or(u8::MAX)
+                 || ipc_ws.name.as_ref() != ws.name()
+                 || ipc_ws.output.as_ref() != output_name
+             {
+@@ -708,7 +708,7 @@ impl State {
+                     let id = ws.id().get();
+                     Workspace {
+                         id,
+-                        idx: u8::try_from(ws_idx + 1).unwrap_or(u8::MAX),
++                        idx: u8::try_from(crate::desk_zero::pos_to_index(ws_idx)).unwrap_or(u8::MAX),
+                         name: ws.name().cloned(),
+                         output: mon.map(|mon| mon.output_name().clone()),
+                         is_urgent: ws.is_urgent(),
+diff --git a/src/layout/mod.rs b/src/layout/mod.rs
+index c5f7cbdf..041d39f0 100644
+--- a/src/layout/mod.rs
++++ b/src/layout/mod.rs
+@@ -232,6 +232,11 @@ pub trait LayoutElement {
+     /// Unique ID of this element.
+     fn id(&self) -> &Self::Id;
+ 
++    /// angel-niri: the window's id as the IPC knows it (window_dither.rs); none in tests.
++    fn angel_id(&self) -> Option<u64> {
++        None
++    }
++
+     /// Updates the config for the element.
+     fn update_config(&mut self, blur_config: niri_config::Blur) {
+         let _ = blur_config;
+@@ -843,8 +848,13 @@ impl HitType {
+ 
+ impl Options {
+     fn from_config(config: &Config) -> Self {
++        let mut layout = config.layout.clone();
++        // angel-niri (desk_zero.rs): the clean desk 0 above desk 1, asked for by the shell
++        if crate::desk_zero::is_on() {
++            layout.empty_workspace_above_first = true;
++        }
+         Self {
+-            layout: config.layout.clone(),
++            layout,
+             animations: config.animations.clone(),
+             gestures: config.gestures,
+             overview: config.overview,
+@@ -1568,7 +1578,7 @@ impl<W: LayoutElement> Layout<W> {
+     ) -> Option<&mut Workspace<W>> {
+         if let WorkspaceReference::Index(index) = reference {
+             self.active_monitor().and_then(|m| {
+-                let index = index.saturating_sub(1) as usize;
++                let index = crate::desk_zero::index_to_pos(index);
+                 m.workspaces.get_mut(index)
+             })
+         } else {
+diff --git a/src/layout/tile.rs b/src/layout/tile.rs
+index 3077c737..cf7c9cd5 100644
+--- a/src/layout/tile.rs
++++ b/src/layout/tile.rs
+@@ -615,6 +615,14 @@ impl<W: LayoutElement> Tile<W> {
+ 
+     /// angel-niri (window_throw.rs): the squash or stretch to draw the tile with: the (x, y)
+     /// scale and its origin in the tile, in whole pixels; `None` when it is drawn as is.
++    /// angel-niri (window_dither.rs): the share of this window's dots gone; fullscreen stays whole.
++    fn dither(&self) -> f32 {
++        if self.sizing_mode.is_fullscreen() {
++            return 0.;
++        }
++        self.window.angel_id().map_or(0., crate::window_dither::level)
++    }
++
+     fn deform(&self) -> Option<(Scale<f64>, Point<f64, Logical>)> {
+         let size = self.animated_tile_size();
+         let ((sx, sy), origin) = if let Some((anim, hit)) = &self.squash {
+@@ -633,7 +641,16 @@ impl<W: LayoutElement> Tile<W> {
+                 Point::from((size.w * gx, size.h * gy)),
+             )
+         } else {
+-            return None;
++            // angel-niri (window_pulse.rs): a pixel or two bigger on the music's kick, about the
++            // centre; fullscreen windows stay put
++            let px = crate::window_pulse::amount();
++            if px <= 0.05 || self.sizing_mode.is_fullscreen() || size.w < 1. || size.h < 1. {
++                return None;
++            }
++            (
++                ((size.w + 2. * px) / size.w, (size.h + 2. * px) / size.h),
++                Point::from((size.w / 2., size.h / 2.)),
++            )
+         };
+         let sx = window_throw::quantize(sx, size.w);
+         let sy = window_throw::quantize(sy, size.h);
+@@ -1926,7 +1943,10 @@ impl<W: LayoutElement> Tile<W> {
+                     warn!("error rendering tile to offscreen for alpha animation: {err:?}");
+                 }
+             }
+-        } else if let Some((deform, origin)) = self.deform() {
++        } else if let Some((deform, origin)) = self.deform().or_else(|| {
++            // angel-niri (window_dither.rs): see-through in dots, through the same offscreen copy
++            (self.dither() > 0.).then(|| (Scale::from(1.), Point::default()))
++        }) {
+             let mut ctx = ctx.as_gles();
+             let mut elements = Vec::new();
+             self.render_inner(
+@@ -1937,9 +1957,20 @@ impl<W: LayoutElement> Tile<W> {
+                 &mut |elem| elements.push(elem),
+             );
+             match self.deform_offscreen.render(ctx.renderer, scale, &elements) {
+-                Ok((elem, _sync, data)) => {
++                Ok((elem, _sync, mut data)) => {
+                     let offset = elem.offset();
+-                    let elem = elem.with_alpha(tile_alpha).with_offset(location + offset);
++                    let mut elem = elem
++                        .with_alpha(tile_alpha)
++                        .with_offset(location + offset)
++                        .with_dither(self.dither());
++                    // angel-niri (window_dither.rs): an id per level, so a notch of the wheel
++                    // damages the window even when its contents stay the same
++                    if let Some(id) = (self.window.angel_id())
++                        .and_then(crate::window_dither::element_id)
++                    {
++                        elem = elem.with_id(id.clone());
++                        data.id = id;
++                    }
+                     let origin = (location + origin).to_physical_precise_round(scale);
+                     let elem = RescaleRenderElement::from_element(elem, origin, deform);
+ 
+diff --git a/src/lib.rs b/src/lib.rs
+index 88a83a77..a6c349b9 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -20,6 +20,7 @@ pub mod cursor_zoom;
+ #[cfg(feature = "dbus")]
+ pub mod dbus;
+ pub mod desk_flags;
++pub mod desk_zero;
+ pub mod desk_throw;
+ pub mod frame_clock;
+ pub mod game;
+@@ -47,6 +48,8 @@ pub mod stacking_title;
+ pub mod ui;
+ pub mod utils;
+ pub mod window;
++pub mod window_dither;
++pub mod window_pulse;
+ pub mod window_throw;
+ 
+ #[cfg(test)]
+diff --git a/src/niri.rs b/src/niri.rs
+index 94606466..ab701667 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -3946,7 +3946,7 @@ impl Niri {
+     ) -> Option<(Option<Output>, usize)> {
+         let (target_workspace_index, target_workspace) = match workspace_reference {
+             WorkspaceReference::Index(index) => {
+-                return Some((None, index.saturating_sub(1) as usize));
++                return Some((None, crate::desk_zero::index_to_pos(index)));
+             }
+             WorkspaceReference::Name(name) => self.layout.find_workspace_by_name(&name)?,
+             WorkspaceReference::Id(id) => {
+@@ -5219,6 +5219,8 @@ impl Niri {
+             state.unfinished_animations_remain |= crate::cursor_fx::animating(self.clock.now());
+             // …or the camera gliding (angel-niri camera.rs)
+             state.unfinished_animations_remain |= crate::camera::animating();
++            // …or the windows springing on a kick (angel-niri window_pulse.rs)
++            state.unfinished_animations_remain |= crate::window_pulse::animating();
+ 
+             // Also check layer surfaces.
+             if !state.unfinished_animations_remain {
+diff --git a/src/pixel_overview.rs b/src/pixel_overview.rs
+index bbad16b4..bd0dcea0 100644
+--- a/src/pixel_overview.rs
++++ b/src/pixel_overview.rs
+@@ -123,7 +123,7 @@ pub fn render<R: NiriRenderer, W: LayoutElement>(
+             }
+ 
+             // its name
+-            let text = ws.name().cloned().unwrap_or_else(|| (idx + 1).to_string());
++            let text = ws.name().cloned().unwrap_or_else(|| crate::desk_zero::pos_to_index(idx).to_string());
+             let rgba = color.to_array_unpremul().map(|c| (c * 255.).round() as u8);
+             let label = cache
+                 .labels
+diff --git a/src/protocols/ext_workspace.rs b/src/protocols/ext_workspace.rs
+index fae308ac..6dbe2f40 100644
+--- a/src/protocols/ext_workspace.rs
++++ b/src/protocols/ext_workspace.rs
+@@ -259,7 +259,7 @@ fn remove_workspace_instances(
+ fn build_name(ws: &Workspace<Mapped>, ws_idx: usize) -> String {
+     ws.name().cloned().unwrap_or_else(|| {
+         // Add 1 since this is a human-readable name, and our action indexing is 1-based.
+-        (ws_idx + 1).to_string()
++        crate::desk_zero::pos_to_index(ws_idx).to_string()
+     })
+ }
+ 
+diff --git a/src/render_helpers/offscreen.rs b/src/render_helpers/offscreen.rs
+index 2f624b17..0640d0ae 100644
+--- a/src/render_helpers/offscreen.rs
++++ b/src/render_helpers/offscreen.rs
+@@ -58,6 +58,8 @@ pub struct OffscreenRenderElement {
+     src_size: Size<i32, Buffer>,
+     alpha: f32,
+     kind: Kind,
++    /// angel-niri (window_dither.rs): the share of the dots gone, 0 whole
++    dither: f32,
+ }
+ 
+ #[derive(Debug)]
+@@ -190,6 +192,7 @@ impl OffscreenBuffer {
+             src_size,
+             alpha: 1.,
+             kind: Kind::Unspecified,
++            dither: 0.,
+         };
+ 
+         let data = OffscreenData {
+@@ -229,6 +232,18 @@ impl OffscreenRenderElement {
+         self
+     }
+ 
++    /// angel-niri (window_dither.rs): another id for the element (one per see-through level).
++    pub fn with_id(mut self, id: Id) -> Self {
++        self.id = id;
++        self
++    }
++
++    /// angel-niri (window_dither.rs): drawn as a screen door with this share of its dots gone.
++    pub fn with_dither(mut self, dither: f32) -> Self {
++        self.dither = dither;
++        self
++    }
++
+     pub fn logical_size(&self) -> Size<f64, Logical> {
+         self.src_size
+             .to_f64()
+@@ -314,17 +329,35 @@ impl RenderElement<GlesRenderer> for OffscreenRenderElement {
+             return Ok(());
+         }
+ 
+-        frame.render_texture_from_to(
++        // angel-niri (window_dither.rs): a screen door, holes and all — nothing opaque
++        let program = (self.dither > 0.)
++            .then(|| crate::render_helpers::shaders::Shaders::get_from_frame(frame).dither.clone())
++            .flatten();
++        if let Some(program) = &program {
++            let cell = (self.scale.x.round() as f32).max(1.) * 2.;
++            frame.override_default_tex_program(
++                program.clone(),
++                vec![
++                    smithay::backend::renderer::gles::Uniform::new("dither_level", self.dither),
++                    smithay::backend::renderer::gles::Uniform::new("dither_cell", cell),
++                ],
++            );
++        }
++        let res = frame.render_texture_from_to(
+             &self.texture,
+             src,
+             dest,
+             damage,
+-            opaque_regions,
++            if program.is_some() { &[] } else { opaque_regions },
+             Transform::Normal,
+             self.alpha,
+             None,
+             &[],
+-        )
++        );
++        if program.is_some() {
++            frame.clear_tex_program_override();
++        }
++        res
+     }
+ 
+     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+diff --git a/src/render_helpers/shaders/dither.frag b/src/render_helpers/shaders/dither.frag
+new file mode 100644
+index 00000000..f60cafe9
+--- /dev/null
++++ b/src/render_helpers/shaders/dither.frag
+@@ -0,0 +1,58 @@
++#version 100
++
++//_DEFINES_
++
++#if defined(EXTERNAL)
++#extension GL_OES_EGL_image_external : require
++#endif
++
++precision highp float;
++#if defined(EXTERNAL)
++uniform samplerExternalOES tex;
++#else
++uniform sampler2D tex;
++#endif
++
++uniform float alpha;
++varying vec2 v_coords;
++
++#if defined(DEBUG_FLAGS)
++uniform float tint;
++#endif
++
++// angel-niri (window_dither.rs): a Bayer screen door, no blending. dither_level of the window's
++// dots are gone (0 whole .. 1 none), in cells of dither_cell physical pixels.
++uniform float dither_level;
++uniform float dither_cell;
++
++float bayer4(vec2 p) {
++    // 4x4 ordered-dither threshold in (0, 1)
++    float x = mod(p.x, 4.0);
++    float y = mod(p.y, 4.0);
++    float m;
++    if (y < 1.0) m = x < 1.0 ? 0.0 : x < 2.0 ? 8.0 : x < 3.0 ? 2.0 : 10.0;
++    else if (y < 2.0) m = x < 1.0 ? 12.0 : x < 2.0 ? 4.0 : x < 3.0 ? 14.0 : 6.0;
++    else if (y < 3.0) m = x < 1.0 ? 3.0 : x < 2.0 ? 11.0 : x < 3.0 ? 1.0 : 9.0;
++    else m = x < 1.0 ? 15.0 : x < 2.0 ? 7.0 : x < 3.0 ? 13.0 : 5.0;
++    return (m + 0.5) / 16.0;
++}
++
++void main() {
++    vec2 cell = floor(gl_FragCoord.xy / max(dither_cell, 1.0));
++    if (bayer4(cell) < dither_level) {
++        gl_FragColor = vec4(0.0);
++        return;
++    }
++    vec4 color = texture2D(tex, v_coords);
++#if defined(NO_ALPHA)
++    color = vec4(color.rgb, 1.0);
++#endif
++    color = color * alpha;
++
++#if defined(DEBUG_FLAGS)
++    if (tint == 1.0)
++        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
++#endif
++
++    gl_FragColor = color;
++}
+diff --git a/src/render_helpers/shaders/mod.rs b/src/render_helpers/shaders/mod.rs
+index 0bc54739..d3615d9e 100644
+--- a/src/render_helpers/shaders/mod.rs
++++ b/src/render_helpers/shaders/mod.rs
+@@ -22,6 +22,8 @@ pub struct Shaders {
+     pub resize: Option<ShaderProgram>,
+     pub gradient_fade: Option<GlesTexProgram>,
+     pub nearest: Option<GlesTexProgram>,
++    /// angel-niri (window_dither.rs)
++    pub dither: Option<GlesTexProgram>,
+     /// angel-niri (desk_throw.rs)
+     pub glitch: Option<GlesTexProgram>,
+     /// angel-niri (camera.rs)
+@@ -205,6 +207,19 @@ impl Shaders {
+             })
+             .ok();
+ 
++        let dither = renderer
++            .compile_custom_texture_shader(
++                include_str!("dither.frag"),
++                &[
++                    UniformName::new("dither_level", UniformType::_1f),
++                    UniformName::new("dither_cell", UniformType::_1f),
++                ],
++            )
++            .map_err(|err| {
++                warn!("error compiling dither shader: {err:?}");
++            })
++            .ok();
++
+         let glitch = renderer
+             .compile_custom_texture_shader(
+                 include_str!("glitch.frag"),
+@@ -269,6 +284,7 @@ impl Shaders {
+             resize,
+             gradient_fade,
+             nearest,
++            dither,
+             glitch,
+             camera,
+             blur,
+diff --git a/src/show_desktop.rs b/src/show_desktop.rs
+index 2b1b388f..90d322e3 100644
+--- a/src/show_desktop.rs
++++ b/src/show_desktop.rs
+@@ -7,6 +7,7 @@
+ //! shortcut: tiled windows (not stacking) stay where they are.
+ 
+ use std::cell::RefCell;
++use std::time::{Duration, Instant};
+ 
+ use niri_ipc::PositionChange;
+ use smithay::utils::{Logical, Point};
+@@ -15,6 +16,9 @@ use crate::niri::State;
+ 
+ /// How much of a parted window stays on screen.
+ const SLIVER: f64 = 24.;
++/// Held at least this long before `--release`: a peek, the windows come back; shorter: a tap,
++/// the desktop stays shown (angelOS's Mod+D press/release, scripts/window-config.py).
++const HOLD: Duration = Duration::from_millis(350);
+ 
+ struct Parted {
+     /// The windows and where they were, relative to the working area.
+@@ -22,6 +26,8 @@ struct Parted {
+     focus: Option<u64>,
+     count: usize,
+     workspace: u64,
++    /// when they were parted, for `--release`
++    at: Instant,
+ }
+ 
+ thread_local! {
+@@ -68,6 +74,7 @@ impl State {
+             focus: self.niri.layout.focus().map(|m| m.id().get()),
+             count: ws.windows().count(),
+             workspace: ws.id().get(),
++            at: Instant::now(),
+         };
+         for (window, x, y) in moves {
+             self.niri.layout.move_floating_window(
+@@ -81,6 +88,14 @@ impl State {
+         self.niri.queue_redraw_all();
+     }
+ 
++    /// `show-desktop --release`: the key is let go — held long, the windows come back.
++    pub fn show_desktop_release(&mut self) {
++        let held = PARTED.with_borrow(|p| p.as_ref().is_some_and(|p| p.at.elapsed() >= HOLD));
++        if held {
++            self.show_desktop_back();
++        }
++    }
++
+     fn show_desktop_back(&mut self) {
+         let Some(parted) = PARTED.take() else {
+             return;
+diff --git a/src/window/mapped.rs b/src/window/mapped.rs
+index 5ce8e717..b80f1ac5 100644
+--- a/src/window/mapped.rs
++++ b/src/window/mapped.rs
+@@ -720,6 +720,10 @@ impl LayoutElement for Mapped {
+         &self.window
+     }
+ 
++    fn angel_id(&self) -> Option<u64> {
++        Some(Mapped::id(self).get())
++    }
++
+     fn title(&self) -> Option<String> {
+         with_toplevel_role(self.toplevel(), |role| role.title.clone())
+     }
+diff --git a/src/window_dither.rs b/src/window_dither.rs
+new file mode 100644
+index 00000000..71f94446
+--- /dev/null
++++ b/src/window_dither.rs
+@@ -0,0 +1,95 @@
++//! angel-niri: Alt+wheel over a window makes it see-through in dots (`niri msg action
++//! set-dither-wheel --on true`), what angelOS's shell turns on from Settings → Windows →
++//! «Прозрачность окна колесом» (services/WindowDither.qml). A Bayer screen door with no blending:
++//! wheel down, more of the window's dots go and what is behind shows through them; wheel up, they
++//! come back. Fullscreen windows stay whole (and keep their Alt+wheel); while it is on the other
++//! apps don't get Alt+wheel. Nothing is remembered: off, or a new login, and every window is whole.
++//! Drawn by Tile::render through an offscreen copy and dither.frag.
++//! Written to the shell's contract (angelOS c4795df), before the author published his own build.
++
++use std::cell::RefCell;
++use std::collections::HashMap;
++use std::sync::atomic::{AtomicBool, Ordering};
++
++use smithay::backend::renderer::element::Id;
++
++/// Steps of the wheel from whole to the most see-through (a 4×4 Bayer matrix has 16 levels; the
++/// last few would leave next to nothing to grab).
++pub const STEPS: u8 = 12;
++
++static ON: AtomicBool = AtomicBool::new(false);
++
++thread_local! {
++    static LEVELS: RefCell<HashMap<u64, u8>> = RefCell::new(HashMap::new());
++    /// a render element id per (window, level): a new level damages the whole window
++    static IDS: RefCell<HashMap<(u64, u8), Id>> = RefCell::new(HashMap::new());
++}
++
++/// The element id for window `id` at its current level; none while it is whole.
++pub fn element_id(id: u64) -> Option<Id> {
++    let lvl = LEVELS.with_borrow(|l| l.get(&id).copied())?;
++    if !is_on() {
++        return None;
++    }
++    Some(IDS.with_borrow_mut(|ids| ids.entry((id, lvl)).or_insert_with(Id::new).clone()))
++}
++
++pub fn set_on(on: bool) {
++    ON.store(on, Ordering::Relaxed);
++    if !on {
++        LEVELS.with_borrow_mut(|l| l.clear());
++        IDS.with_borrow_mut(|ids| ids.clear());
++    }
++}
++
++pub fn is_on() -> bool {
++    ON.load(Ordering::Relaxed)
++}
++
++/// One notch of the wheel over window `id`: down (`steps` > 0) more see-through, up less.
++pub fn wheel(id: u64, steps: i32) {
++    LEVELS.with_borrow_mut(|l| {
++        let cur = i32::from(*l.get(&id).unwrap_or(&0));
++        let new = (cur + steps).clamp(0, i32::from(STEPS));
++        if new == 0 {
++            l.remove(&id);
++        } else {
++            l.insert(id, new as u8);
++        }
++    });
++}
++
++/// How much of window `id` is gone, 0 (whole) .. under 1.
++pub fn level(id: u64) -> f32 {
++    if !is_on() {
++        return 0.;
++    }
++    LEVELS.with_borrow(|l| l.get(&id).map_or(0., |&v| f32::from(v) / 16.))
++}
++
++pub fn forget(id: u64) {
++    LEVELS.with_borrow_mut(|l| l.remove(&id));
++    IDS.with_borrow_mut(|ids| ids.retain(|(w, _), _| *w != id));
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn the_wheel_goes_and_comes_back() {
++        set_on(true);
++        wheel(7, 3);
++        assert_eq!(level(7), 3. / 16.);
++        wheel(7, 100);
++        assert_eq!(level(7), f32::from(STEPS) / 16.);
++        wheel(7, -100);
++        assert_eq!(level(7), 0.);
++        wheel(7, 2);
++        set_on(false);
++        assert_eq!(level(7), 0.);
++        set_on(true);
++        assert_eq!(level(7), 0., "off forgets");
++        set_on(false);
++    }
++}
+diff --git a/src/window_pulse.rs b/src/window_pulse.rs
+new file mode 100644
+index 00000000..a02b774a
+--- /dev/null
++++ b/src/window_pulse.rs
+@@ -0,0 +1,85 @@
++//! angel-niri: the windows spring a pixel or two on each kick of the music (`niri msg action
++//! window-pulse --px 2 --ms 180`), what angelOS's shell sends from its drum hearing
++//! (services/WindowPulse.qml, Settings → Windows → «Окна вздрагивают под бочку»). The tiles are
++//! rescaled about their centres as they are drawn (Tile::deform, the throw's squash path), so
++//! nothing is drawn twice; fullscreen windows (games, videos) stay put. A pulse rises fast and
++//! eases back over `ms`; a new kick starts over from where the last one is. px 0 / ms 0 is the
++//! shell's probe: accepted, nothing moves.
++//! Written to the shell's contract (angelOS c4795df), before the author published his own build.
++
++use std::cell::Cell;
++use std::time::{Duration, Instant};
++
++/// Up to this many px on each side, whatever is asked.
++const MAX_PX: f64 = 6.;
++/// The share of the pulse spent growing; the rest eases back.
++const RISE: f64 = 0.22;
++
++thread_local! {
++    static PULSE: Cell<Option<(Instant, f64, Duration)>> = const { Cell::new(None) };
++}
++
++pub fn pulse(px: f64, ms: u32) {
++    let px = if px.is_finite() { px.clamp(0., MAX_PX) } else { 0. };
++    if px <= 0. || ms == 0 {
++        return;
++    }
++    // a kick over a pulse still going: from its current height, never smaller
++    let now = Instant::now();
++    let px = px.max(amount_at(now));
++    PULSE.set(Some((now, px, Duration::from_millis(u64::from(ms.min(2000))))));
++}
++
++fn amount_at(now: Instant) -> f64 {
++    let Some((at, px, dur)) = PULSE.get() else {
++        return 0.;
++    };
++    let t = now.saturating_duration_since(at).as_secs_f64() / dur.as_secs_f64().max(1e-3);
++    if t >= 1. {
++        return 0.;
++    }
++    let k = if t < RISE {
++        // ease out to the top
++        let x = t / RISE;
++        1. - (1. - x) * (1. - x)
++    } else {
++        // ease back down
++        let x = (t - RISE) / (1. - RISE);
++        (1. - x) * (1. - x)
++    };
++    px * k
++}
++
++/// Pixels each side of a window grows by just now.
++pub fn amount() -> f64 {
++    amount_at(Instant::now())
++}
++
++/// Whether the next frames still move.
++pub fn animating() -> bool {
++    PULSE.get().is_some_and(|(at, _, dur)| at.elapsed() < dur + Duration::from_millis(20))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn rises_and_settles() {
++        let t0 = Instant::now();
++        PULSE.set(Some((t0, 2., Duration::from_millis(200))));
++        assert_eq!(amount_at(t0), 0.);
++        let top = amount_at(t0 + Duration::from_millis(44));
++        assert!((top - 2.).abs() < 0.01, "{top}");
++        assert!(amount_at(t0 + Duration::from_millis(120)) < top);
++        assert_eq!(amount_at(t0 + Duration::from_millis(200)), 0.);
++        PULSE.set(None);
++    }
++
++    #[test]
++    fn the_probe_moves_nothing() {
++        PULSE.set(None);
++        pulse(0., 0);
++        assert!(!animating());
++    }
++}

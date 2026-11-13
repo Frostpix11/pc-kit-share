@@ -1,0 +1,4 @@
+#!/bin/sh
+# sudo -A helper: password window on the desktop; Celestia never sees the password
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+exec zenity --password --title="Селестия просит sudo" 2>/dev/null

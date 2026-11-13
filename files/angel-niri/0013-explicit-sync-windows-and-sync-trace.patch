@@ -1,0 +1,270 @@
+diff --git a/src/handlers/compositor.rs b/src/handlers/compositor.rs
+index 14fb184c..eaad0029 100644
+--- a/src/handlers/compositor.rs
++++ b/src/handlers/compositor.rs
+@@ -607,6 +607,22 @@ impl State {
+                     })
+             });
+             if let Some(dmabuf) = maybe_dmabuf {
++                // angel-niri: ANGEL_NIRI_SYNC_TRACE=1, how the frames come in
++                let traced = crate::sync_trace::enabled()
++                    .then(|| {
++                        let label = || {
++                            surface
++                                .client()
++                                .and_then(|c| c.get_credentials(&state.niri.display_handle).ok())
++                                .map(|c| {
++                                    let comm = std::fs::read_to_string(format!("/proc/{}/comm", c.pid))
++                                        .unwrap_or_default();
++                                    format!("pid {} {}", c.pid, comm.trim())
++                                })
++                                .unwrap_or_default()
++                        };
++                        (surface.id(), crate::sync_trace::commit(&surface.id(), acquire_point.is_some(), label))
++                    });
+                 // angel-niri: an explicitly synced buffer is ready when its acquire point is
+                 // signalled, not when its implicit fence says so
+                 if let Some(acquire_point) = acquire_point {
+@@ -615,6 +631,9 @@ impl State {
+                             let res = state.niri.event_loop.insert_source(
+                                 source,
+                                 move |_, _, state| {
++                                    if let Some((id, since)) = &traced {
++                                        crate::sync_trace::cleared(id, *since);
++                                    }
+                                     let display_handle = state.niri.display_handle.clone();
+                                     state
+                                         .client_compositor_state(&client)
+diff --git a/src/handlers/xdg_shell.rs b/src/handlers/xdg_shell.rs
+index e1e96cf4..f9c62ef9 100644
+--- a/src/handlers/xdg_shell.rs
++++ b/src/handlers/xdg_shell.rs
+@@ -1579,7 +1579,16 @@ pub fn add_mapped_toplevel_pre_commit_hook(toplevel: &ToplevelSurface) -> HookId
+             return;
+         };
+ 
++        // angel-niri: explicit sync, the buffer's acquire point (linux-drm-syncobj-v1)
++        let mut acquire_point = None;
+         let (got_unmapped, dmabuf, commit_serial) = with_states(surface, |states| {
++            acquire_point.clone_from(
++                &states
++                    .cached_state
++                    .get::<smithay::wayland::drm_syncobj::DrmSyncobjCachedState>()
++                    .pending()
++                    .acquire_point,
++            );
+             let (got_unmapped, dmabuf) = {
+                 let mut guard = states.cached_state.get::<SurfaceAttributes>();
+                 match guard.pending().buffer.as_ref() {
+@@ -1649,8 +1658,60 @@ pub fn add_mapped_toplevel_pre_commit_hook(toplevel: &ToplevelSurface) -> HookId
+             error!("commit on a mapped surface without a configured serial");
+         };
+ 
+-        if let Some((blocker, source)) =
+-            dmabuf.and_then(|dmabuf| dmabuf.generate_blocker(Interest::READ).ok())
++        // angel-niri: ANGEL_NIRI_SYNC_TRACE=1, how the frames come in
++        let traced = (dmabuf.is_some() && crate::sync_trace::enabled()).then(|| {
++            let label = || {
++                surface
++                    .client()
++                    .and_then(|c| c.get_credentials(&state.niri.display_handle).ok())
++                    .map(|c| {
++                        let comm =
++                            std::fs::read_to_string(format!("/proc/{}/comm", c.pid)).unwrap_or_default();
++                        format!("pid {} {}", c.pid, comm.trim())
++                    })
++                    .unwrap_or_default()
++            };
++            (surface.id(), crate::sync_trace::commit(&surface.id(), acquire_point.is_some(), label))
++        });
++
++        // angel-niri: an explicitly synced buffer is ready when its acquire point is signalled, not
++        // when its implicit fence says so (NVIDIA has none: the buffer may still be being drawn)
++        let mut transaction_for_dmabuf = transaction_for_dmabuf;
++        let synced = dmabuf.is_some()
++            && acquire_point.is_some_and(|point| {
++                let Ok((blocker, source)) = point.generate_blocker() else {
++                    return false;
++                };
++                let Some(client) = surface.client() else {
++                    return false;
++                };
++                let mut transaction = transaction_for_dmabuf.take();
++                let traced = traced.clone();
++                let res = state.niri.event_loop.insert_source(source, move |_, _, state| {
++                    if let Some((id, since)) = &traced {
++                        crate::sync_trace::cleared(id, *since);
++                    }
++                    // This surface is now ready for the transaction.
++                    drop(transaction.take());
++                    let display_handle = state.niri.display_handle.clone();
++                    state
++                        .client_compositor_state(&client)
++                        .blocker_cleared(state, &display_handle);
++                    Ok(())
++                });
++                if res.is_ok() {
++                    add_blocker(surface, blocker);
++                    trace!("added acquire point blocker");
++                    true
++                } else {
++                    false
++                }
++            });
++
++        if let Some((blocker, source)) = (!synced)
++            .then_some(dmabuf)
++            .flatten()
++            .and_then(|dmabuf| dmabuf.generate_blocker(Interest::READ).ok())
+         {
+             if let Some(client) = surface.client() {
+                 let res = state
+diff --git a/src/lib.rs b/src/lib.rs
+index a6c349b9..8ef51022 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -44,6 +44,7 @@ pub mod scene;
+ #[cfg(feature = "xdp-gnome-screencast")]
+ pub mod screencasting;
+ pub mod stacking;
++pub mod sync_trace;
+ pub mod stacking_title;
+ pub mod ui;
+ pub mod utils;
+diff --git a/src/niri.rs b/src/niri.rs
+index 029daef7..1953bec2 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -5694,7 +5694,12 @@ impl Niri {
+                 return None;
+             }
+ 
+-            throttled(states)
++            let r = throttled(states);
++            // angel-niri: ANGEL_NIRI_SYNC_TRACE=1 counts them
++            if r.is_some() && crate::sync_trace::enabled() {
++                crate::sync_trace::frame(&surface.id());
++            }
++            r
+         };
+ 
+         // angel-niri (cast_only.rs): a viewers-only layer is never on the monitor, so it has no
+diff --git a/src/sync_trace.rs b/src/sync_trace.rs
+new file mode 100644
+index 00000000..60081b03
+--- /dev/null
++++ b/src/sync_trace.rs
+@@ -0,0 +1,113 @@
++//! angel-niri: ANGEL_NIRI_SYNC_TRACE=1 — a look at how a busy surface's frames come in, every 2 s
++//! in the log: commits a second, the gaps between them (a client short of buffers shows long
++//! ones) and how long each waited for its explicit-sync acquire point. Off: nothing is done.
++use std::cell::RefCell;
++use std::collections::HashMap;
++use std::time::{Duration, Instant};
++
++use smithay::reexports::wayland_server::backend::ObjectId;
++
++#[derive(Default)]
++struct Stat {
++    label: String,
++    frames: u32,
++    last: Option<Instant>,
++    gaps: Vec<f32>,
++    waits: Vec<f32>,
++    synced: u32,
++}
++
++thread_local! {
++    static ON: bool = std::env::var_os("ANGEL_NIRI_SYNC_TRACE").is_some_and(|v| v == "1");
++    static STATS: RefCell<(Option<Instant>, HashMap<ObjectId, Stat>)> = RefCell::new((None, HashMap::new()));
++}
++
++pub fn enabled() -> bool {
++    ON.with(|on| *on)
++}
++
++/// A dmabuf commit of `id` came in now.
++pub fn commit(id: &ObjectId, synced: bool, label: impl FnOnce() -> String) -> Instant {
++    let now = Instant::now();
++    STATS.with(|s| {
++        let mut s = s.borrow_mut();
++        let st = s.1.entry(id.clone()).or_default();
++        if st.label.is_empty() {
++            st.label = label();
++        }
++        if let Some(last) = st.last {
++            st.gaps.push((now - last).as_secs_f32() * 1000.);
++        }
++        st.last = Some(now);
++        if synced {
++            st.synced += 1;
++        }
++    });
++    report(now);
++    now
++}
++
++/// niri sent `id` a frame callback (its turn to draw).
++pub fn frame(id: &ObjectId) {
++    STATS.with(|s| {
++        if let Some(st) = s.borrow_mut().1.get_mut(id) {
++            st.frames += 1;
++        }
++    });
++}
++
++/// Its acquire point was signalled (the commit `since` may go on).
++pub fn cleared(id: &ObjectId, since: Instant) {
++    let ms = since.elapsed().as_secs_f32() * 1000.;
++    STATS.with(|s| {
++        if let Some(st) = s.borrow_mut().1.get_mut(id) {
++            st.waits.push(ms);
++        }
++    });
++}
++
++fn pct(v: &mut [f32], p: f32) -> f32 {
++    if v.is_empty() {
++        return 0.;
++    }
++    v.sort_by(|a, b| a.total_cmp(b));
++    v[((v.len() - 1) as f32 * p) as usize]
++}
++
++fn report(now: Instant) {
++    STATS.with(|s| {
++        let mut s = s.borrow_mut();
++        let start = *s.0.get_or_insert(now);
++        if now - start < Duration::from_secs(2) {
++            return;
++        }
++        let secs = (now - start).as_secs_f32();
++        s.0 = Some(now);
++        for (id, st) in s.1.iter_mut() {
++            let n = st.gaps.len();
++            if n >= 200 {
++                let med = pct(&mut st.gaps, 0.5);
++                let long = st.gaps.iter().filter(|g| **g > 1.8 * med).count();
++                let p99 = pct(&mut st.gaps, 0.99);
++                let max = pct(&mut st.gaps, 1.0);
++                let wn = st.waits.len();
++                let wmean = if wn > 0 { st.waits.iter().sum::<f32>() / wn as f32 } else { 0. };
++                let wp99 = pct(&mut st.waits, 0.99);
++                let wmax = pct(&mut st.waits, 1.0);
++                info!(
++                    "sync-trace {id} {}: {:.0} commits/s, {:.0} frame callbacks/s ({} synced), gap median {med:.2} p99 {p99:.2} max {max:.1} ms, >1.8x median {long} ({:.1}%), acquire wait mean {wmean:.2} p99 {wp99:.2} max {wmax:.1} ms ({wn})",
++                    st.label,
++                    n as f32 / secs,
++                    st.frames as f32 / secs,
++                    st.synced,
++                    long as f32 * 100. / n as f32
++                );
++            }
++            st.gaps.clear();
++            st.waits.clear();
++            st.synced = 0;
++            st.frames = 0;
++        }
++        s.1.retain(|_, st| st.last.is_some_and(|l| now - l < Duration::from_secs(5)));
++    });
++}

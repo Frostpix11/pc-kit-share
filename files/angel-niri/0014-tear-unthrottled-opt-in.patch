@@ -1,0 +1,28 @@
+diff --git a/src/backend/tty.rs b/src/backend/tty.rs
+index 359ca2ce..8261247a 100644
+--- a/src/backend/tty.rs
++++ b/src/backend/tty.rs
+@@ -1738,6 +1738,13 @@ impl Tty {
+             return;
+         };
+ 
++        // angel-niri (game.rs): a tearing game's async flips complete right away; that's what was
++        // asked for, not a driver delivering vblanks early, so they aren't held back to the
++        // refresh rate (the game's buffers come back as soon as the next frame is up).
++        // Opt-in by ANGEL_NIRI_TEAR_UNTHROTTLED=1.
++        let unthrottled = niri.tearing_now(&output)
++            && std::env::var_os("ANGEL_NIRI_TEAR_UNTHROTTLED").is_some_and(|v| v == "1");
++
+         let Some(output_state) = niri.output_state.get_mut(&output) else {
+             error!("missing output state for {name}");
+             return;
+@@ -1751,7 +1758,8 @@ impl Tty {
+             presentation_time
+         };
+ 
+-        if output_state
++        if !unthrottled
++            && output_state
+             .vblank_throttle
+             .throttle(refresh_interval, time, move |state| {
+                 let meta = DrmEventMetadata {

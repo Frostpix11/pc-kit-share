@@ -1,0 +1,112 @@
+diff -ruN a/src/server/event.rs b/src/server/event.rs
+--- a/src/server/event.rs	2026-11-06 16:34:35.309744676 +0200
++++ b/src/server/event.rs	2026-11-06 16:35:18.853381445 +0200
+@@ -988,6 +988,7 @@
+                 ));
+                 let output_name = get_output_name(output, &state.world);
+                 let window_data = data.get::<&WindowData>();
++                state.keyboard_on_x = true;
+                 let has_take_focus = window_data.as_ref().is_some_and(|d| d.attrs.has_take_focus);
+                 state.to_focus = Some(FocusData {
+                     window: *window,
+@@ -998,6 +999,7 @@
+                 keyboard.enter(serial, surface, keys);
+             }
+             client::wl_keyboard::Event::Leave { serial, surface } => {
++                state.keyboard_on_x = false;
+                 if !surface.is_alive() {
+                     return;
+                 }
+diff -ruN a/src/server/mod.rs b/src/server/mod.rs
+--- a/src/server/mod.rs	2026-11-06 16:34:35.309671097 +0200
++++ b/src/server/mod.rs	2026-11-06 16:35:18.853338115 +0200
+@@ -538,6 +538,8 @@
+     unfocus: bool,
+     last_focused_toplevel: Option<x::Window>,
+     last_hovered: Option<x::Window>,
++    /// angel: an X11 window has the keyboard now (last_focused_toplevel stays after it leaves)
++    keyboard_on_x: bool,
+ 
+     xdg_wm_base: XdgWmBase,
+     compositor: client::wl_compositor::WlCompositor,
+@@ -643,6 +645,7 @@
+             unfocus: false,
+             last_focused_toplevel: None,
+             last_hovered: None,
++            keyboard_on_x: false,
+             xdg_wm_base,
+             compositor,
+             subcompositor,
+@@ -1647,6 +1650,16 @@
+             let window_data = data.get::<&WindowData>().unwrap();
+             if window_data.attrs.role.is_popup() {
+                 popup_for = self.last_hovered.or(self.last_focused_toplevel);
++                // angel: Steam's toast with no X11 window in front: a popup would hang on a
++                // parent that may be off screen. As a toplevel niri's rule puts it in the corner.
++                let toast = window_data
++                    .attrs
++                    .title
++                    .as_ref()
++                    .is_some_and(|t| t.name().starts_with("notificationtoasts_"));
++                if toast && !self.keyboard_on_x {
++                    popup_for = None;
++                }
+             }
+             splash = window_data.attrs.role == WindowRole::Splash;
+ 
+diff -ruN a/src/server/tests.rs b/src/server/tests.rs
+--- a/src/server/tests.rs	2026-11-06 16:34:35.309817376 +0200
++++ b/src/server/tests.rs	2026-11-06 16:35:18.853424975 +0200
+@@ -1691,6 +1691,52 @@
+     assert_eq!(f.satellite.last_hovered, Some(win1));
+ }
+ 
++// angel: a Steam toast is a toplevel with the keyboard off X11, a popup with it on X11
++fn steam_toast_is_toplevel(keyboard_on_x: bool) -> bool {
++    let (mut f, comp) = TestFixture::new_with_compositor();
++    let win1 = Window::new(1);
++    let (_, id1) = f.create_toplevel(&comp, win1);
++    f.testwl.configure_toplevel(id1, 100, 100, vec![]);
++    f.run();
++    f.satellite.keyboard_on_x = keyboard_on_x;
++
++    let toast = Window::new(2);
++    let (buffer, surface) = comp.create_surface();
++    f.new_window(
++        toast,
++        true,
++        WindowData {
++            dims: WindowDims {
++                width: 300,
++                height: 100,
++                ..Default::default()
++            },
++            ..Default::default()
++        },
++    );
++    f.satellite.set_win_title(
++        toast,
++        crate::xstate::WmName::WmName("notificationtoasts_7_desktop".into()),
++    );
++    f.map_window(&comp, toast, &surface.obj, &buffer);
++    f.run();
++    let id = f.check_new_surface();
++    matches!(
++        f.testwl.get_surface_data(id).unwrap().role,
++        Some(testwl::SurfaceRole::Toplevel(_))
++    )
++}
++
++#[test]
++fn steam_toast_is_toplevel_without_x11_focus() {
++    assert!(steam_toast_is_toplevel(false));
++}
++
++#[test]
++fn steam_toast_is_popup_with_x11_focus() {
++    assert!(!steam_toast_is_toplevel(true));
++}
++
+ #[test]
+ fn override_redirect_choose_hover_window() {
+     let (mut f, comp) = TestFixture::new_with_compositor();

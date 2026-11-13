@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""celestia-watch-sum WATCH.jsonl [mangohud.csv ...]
+Per MangoHud log window: FPS stats + what the system did meanwhile (from celestia-watch).
+Without csv args: every MangoHud log in ~/mangologs (top level) that overlaps the watch file."""
+from __future__ import annotations
+
+import csv, json, os, statistics as st, sys
+from collections import defaultdict
+from pathlib import Path
+
+THR = {0x1: "idle", 0x2: "appclk", 0x4: "swpower", 0x8: "hwslow", 0x20: "sync", 0x40: "swthermal",
+       0x80: "hwthermal", 0x100: "powerbrake", 0x200: "dispclk"}
+
+
+def mango(path: Path):
+    rows = list(csv.reader(open(path)))
+    i = next(k for k, r in enumerate(rows) if r and r[0] == "fps")
+    h = rows[i]
+    fi, ti, ei = h.index("fps"), h.index("frametime"), h.index("elapsed")
+    fr = [(float(r[ti]), int(r[ei])) for r in rows[i + 1:] if len(r) == len(h)]
+    end = os.path.getmtime(path)
+    start = end - fr[-1][1] / 1e9
+    ft = sorted(x[0] for x in fr)
+    n = len(ft)
+    tot = sum(ft)
+    low = lambda p: 1000 / st.mean(ft[-max(1, int(n * p)):])
+    stats = {"frames": n, "avg": round(1000 * n / tot, 1), "1%": round(low(0.01), 1),
+             "0.1%": round(low(0.001), 1), "p99ms": round(ft[int(n * 0.99)], 2)}
+    med = st.median(ft)
+    spikes = [start + e / 1e9 for t, e in fr if t > 2 * med]
+    return start, end, stats, spikes, med
+
+
+def main():
+    wpath = Path(sys.argv[1])
+    L = [json.loads(l) for l in open(wpath) if l.strip()]
+    F = [x for x in L if x["k"] == "f"]
+    S = [x for x in L if x["k"] == "s"][1:]
+    names: dict[str, str] = {}
+    for s in S:
+        for pid, v in s["procs"].items():
+            names[pid] = v[0]
+        for tid, v in s["threads"].items():
+            names[str(v[0])] = v[1]
+        for v in s["new"]:
+            names[str(v[0])] = v[1]
+    logs = [Path(a) for a in sys.argv[2:]]
+    if not logs:
+        t0, t1 = L[0]["t"], L[-1]["t"]
+        for p in sorted(Path.home().joinpath("mangologs").glob("*.csv")):
+            if p.name.endswith("_summary.csv"):
+                continue
+            m = os.path.getmtime(p)
+            if t0 <= m <= t1 + 5:
+                logs.append(p)
+    print(f"watch {wpath.name}: {len(F)} fast, {len(S)} slow; self cpu avg "
+          f"{st.mean(s['self'] for s in S):.1f}% of one core")
+    for lp in logs:
+        start, end, stats, spikes, med = mango(lp)
+        f = [x for x in F if start <= x["t"] <= end]
+        s = [x for x in S if start <= x["t"] <= end]
+        if not f:
+            print(f"\n== {lp.name}: no watch data"); continue
+        print(f"\n== {lp.name}  {stats}  median {med:.2f} ms, spikes(>2x) {len(spikes)}")
+        loads = list(zip(*[x["load"] for x in f]))
+        print("cores avg%:", " ".join(f"{st.mean(c):.0f}" for c in loads),
+              "| max-core avg", f"{st.mean(max(x['load']) for x in f):.0f}")
+        print("mhz avg:", " ".join(f"{st.mean(c):.0f}" for c in zip(*[x['mhz'] for x in f])))
+        g = lambda k: [x[k] for x in f if k in x]
+        thr = 0
+        for x in f:
+            thr |= x.get("thr", 0)
+        print(f"gpu util {st.mean(g('gu')):.0f}% (min {min(g('gu'))}), mem-ctl {st.mean(g('gmu')):.0f}%, "
+              f"clk {st.mean(g('gclk')):.0f}, {st.mean(g('gw')):.0f} W, {max(g('gt'))} C, "
+              f"pstate {set(g('ps'))}, reasons {[v for b, v in THR.items() if thr & b]}")
+        per = lambda k: st.mean(x[k] for x in f) / 0.25
+        print(f"forks/s {per('forks'):.1f} (max {max(x['forks'] for x in f) * 4}), ctxt/s {per('ctxt'):.0f}, "
+              f"irq/s {per('irq'):.0f}, runnable avg {st.mean(x['run'] for x in f):.1f}")
+        psi = defaultdict(list)
+        for x in f:
+            for k, v in x["psi"].items():
+                psi[k].append(v)
+        print("psi ms/s:", ", ".join(f"{k} {sum(v) / 1000 / (end - start):.1f}" for k, v in psi.items() if sum(v)))
+        print("game state:", {v: sum(1 for x in f if x['state'] == v) for v in set(x['state'] for x in f)})
+        # processes
+        pc = defaultdict(float)
+        for x in s:
+            for pid, v in x["procs"].items():
+                pc[v[0]] += v[1]
+        print("procs cpu% (of one core):", ", ".join(f"{k} {v / len(s):.1f}" for k, v in
+                                                     sorted(pc.items(), key=lambda kv: -kv[1])[:14]))
+        tc, tw = defaultdict(float), defaultdict(float)
+        for x in s:
+            for tid, v in x["threads"].items():
+                key = f"{v[1]}/{v[2]}"
+                tc[key] += v[3]; tw[key] += v[4]
+        print("threads cpu% / rq-wait ms/s:")
+        for k, v in sorted(tc.items(), key=lambda kv: -kv[1])[:16]:
+            print(f"   {k:40s} {v / len(s):5.1f}%  wait {tw[k] / len(s):5.1f}")
+        top_wait = sorted(tw.items(), key=lambda kv: -kv[1])[:6]
+        print("most rq-wait:", ", ".join(f"{k} {v / len(s):.1f}" for k, v in top_wait))
+        sm, vr = defaultdict(list), {}
+        for x in s:
+            for pid, v in x.get("sm", {}).items():
+                sm[names.get(pid, pid)].append(v)
+            for pid, v in x.get("vram", {}).items():
+                vr[names.get(pid, pid)] = v
+        print("gpu per proc, time-weighted over the run (sm%, mem%, enc%; seconds NVML saw it):",
+              ", ".join(f"{k} {sum(a[0] for a in v) / len(s):.1f}/{sum(a[1] for a in v) / len(s):.1f}/"
+                        f"{sum(a[2] for a in v) / len(s):.1f} ({len(v)}s)" for k, v in sorted(sm.items(), key=lambda kv: -sum(a[0] for a in kv[1]))))
+        print("vram MiB:", ", ".join(f"{k} {v}" for k, v in sorted(vr.items(), key=lambda kv: -kv[1])[:8]))
+        ne = defaultdict(int)
+        for x in s:
+            for k, v in x["niri"].items():
+                ne[k] += v
+        print("niri events:", dict(ne))
+        nw = defaultdict(int)
+        for x in s:
+            for v in x["new"]:
+                nw[v[1]] += 1
+        print("new procs:", dict(sorted(nw.items(), key=lambda kv: -kv[1])))
+        mem = [x["mem"]["MemAvailable"] for x in s]
+        vm0, vm1 = s[0]["vm"], s[-1]["vm"]
+        print(f"mem avail min {min(mem)} MiB, swap used {s[-1]['mem']['SwapTotal'] - s[-1]['mem']['SwapFree']} MiB, "
+              + ", ".join(f"{k} +{vm1[k] - vm0[k]}" for k in vm1))
+        # spikes vs calm
+        sp = set(round(t * 4) for t in spikes)
+        hot = [x for x in f if round(x["t"] * 4) in sp or round(x["t"] * 4) - 1 in sp]
+        calm = [x for x in f if x not in hot]
+        if hot and calm:
+            for k in ("forks", "ctxt", "gu", "gclk"):
+                print(f"  spike vs calm {k}: {st.mean(x.get(k, 0) for x in hot):.1f} vs {st.mean(x.get(k, 0) for x in calm):.1f}")
+            print(f"  spike vs calm max-core: {st.mean(max(x['load']) for x in hot):.0f} vs {st.mean(max(x['load']) for x in calm):.0f}")
+
+
+if __name__ == "__main__":
+    main()

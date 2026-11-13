@@ -1,0 +1,11 @@
+[Unit]
+Description=After sleep: back to the desk, check EasyEffects (Селестия)
+After=systemd-suspend.service nvidia-resume.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/celestia/celestia-sleep post
+TimeoutStartSec=60
+
+[Install]
+WantedBy=systemd-suspend.service

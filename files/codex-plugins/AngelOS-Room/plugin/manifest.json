@@ -1,0 +1,14 @@
+{
+  "id": "angelos-room",
+  "name": {"ru": "Комната — день и ночь", "en": "Room — day and night"},
+  "version": "0.2.0",
+  "author": "Local customization; original daytime artwork by MixaDoDs",
+  "description": {"ru": "Живая комната angelOS: оригинальное летнее утро и лунная ночь с серафимом за окном.", "en": "Layered angelOS room: the original summer morning and a moonlit night with a seraph outside."},
+  "icon": "image",
+  "enabledByDefault": true,
+  "themes": ["pixel", "mac"],
+  "realms": ["heaven"],
+  "main": "RoomService.qml",
+  "settings": "RoomSettings.qml",
+  "settingsNear": "wallpaper"
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=NVIDIA RTX 3060: undervolt — V/F curve +200 MHz with the clock capped at 1950 MHz (Селестия, 2026-11-02; cap after Xid 109 in CS2)
+After=nvidia-power-limit.service nvidia-persistenced.service
+Wants=nvidia-power-limit.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 -I /usr/local/lib/celestia/gpu-offset.py set 200 0
+ExecStart=/usr/bin/nvidia-smi -lgc 210,1950
+ExecStop=/usr/bin/nvidia-smi -rgc
+ExecStop=/usr/bin/python3 -I /usr/local/lib/celestia/gpu-offset.py set 0 0
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+{
+  "id": "angelos-night-2004",
+  "name": {
+    "ru": "Точка сохранения — ночь",
+    "en": "Save point — night"
+  },
+  "version": "0.4.5",
+  "author": "Local customization (Claude + Codex); original artwork and night engine by MixaDoDs",
+  "description": {
+    "ru": "Временная ночная версия обоев «Точка сохранения» (06-2004) для движка ночи автора: сумерки, ночь, рассвет, звёзды, метеор в 04:00 с падением, вспышкой, тряской и взрывом, осколки и звуки. Удалите, когда автор выпустит свою ночь.",
+    "en": "Interim night for the 06-2004 'Save point' wallpaper on the author's night engine. Remove once the author ships his own."
+  },
+  "icon": "image",
+  "enabledByDefault": true,
+  "themes": [
+    "pixel",
+    "mac"
+  ],
+  "realms": [
+    "heaven"
+  ],
+  "main": "NightService.qml",
+  "settings": "NightSettings.qml",
+  "settingsNear": "wallpaper"
+}

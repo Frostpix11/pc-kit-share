@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Сводка встроенного бенчмарка Cyberpunk 2077 по его собственным файлам (весь тест, каждый кадр).
+cp-sum [N]   последние N прогонов (по умолчанию 6)"""
+import csv, glob, json, os, statistics, sys
+B = "/mnt/game/SteamLibrary/steamapps/compatdata/1091500/pfx/drive_c/users/steamuser/Documents/CD Projekt Red/Cyberpunk 2077/benchmarkResults"
+n = int(sys.argv[1]) if len(sys.argv) > 1 else 6
+runs = sorted(glob.glob(os.path.join(B, "benchmark_*")))[-n:]
+def low(ft, pct):
+    worst = sorted(ft, reverse=True)[:max(1, int(len(ft) * pct / 100))]
+    return 1000 / statistics.mean(worst)
+print(f"{'прогон':20} {'avg':>6} {'1%':>6} {'0.1%':>6}  апскейл / генерация, разрешение рендера")
+for r in runs:
+    try:
+        d = json.load(open(os.path.join(r, "summary.json")))["Data"]
+        ft = []
+        with open(os.path.join(r, "frames.csv")) as f:
+            for row in csv.reader(f):
+                try: ft.append(float(row[1]))
+                except (ValueError, IndexError): pass
+        ft = ft[30:]  # первые кадры — загрузка сцены
+        avg = 1000 / statistics.mean(ft)
+        up = "DLSS " + str(d.get("DLSSQuality")) if d.get("DLSSEnabled") else ("FSR3 " + str(d.get("FSR3Quality")) if d.get("FSR3Enabled") else ("XeSS" if d.get("XeSSEnabled") else "нет"))
+        fg = "FSR-FG" if d.get("FSR3FrameGenEnabled") else ("XeSS-FG" if d.get("XeSSFrameGenEnabled") else "")
+        print(f"{os.path.basename(r)[10:]:20} {avg:6.1f} {low(ft,1):6.1f} {low(ft,0.1):6.1f}  {up} {fg} {d.get('renderWidth')}x{d.get('renderHeight')} (игра: {d.get('averageFps'):.1f})")
+    except Exception as e:
+        print(os.path.basename(r), "ошибка:", e)

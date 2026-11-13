@@ -1,0 +1,36 @@
+--- a/.config/quickshell/angelos/modules/mac/MacMenuBar.qml
++++ b/.config/quickshell/angelos/modules/mac/MacMenuBar.qml
+@@ -23,6 +23,10 @@
+     readonly property color ink: GoldenGate.barInk(screenName)
+     readonly property bool menuHere: MacMenus.isOpen && MacMenus.screen === screenName
+     readonly property real h: GoldenGate.barHeight
++    // Halo shares the top edge with the menu bar. Reserve one strip for both surfaces,
++    // rather than letting Halo's Overlay zone push this Top surface down.
++    readonly property string haloZoneMode: Config.halo.windows === "maximized" && !WindowConfig.floatAll ? "bar" : Config.halo.windows || "bar"
++    readonly property int haloZone: Halo.on(screenName) && Config.halo.reserve && haloZoneMode === "bar" ? Halo.strip : 0
+     // the plugins' panel widgets the panel would show (BarLayout: its order, hidden ones stay
+     // hidden), leftmost first — the status row runs right to left
+     readonly property var plugins: BarLayout.all.filter(id => id.startsWith("plugin:")).reverse()
+@@ -34,7 +38,7 @@
+         right: true
+     }
+     implicitHeight: h
+-    exclusiveZone: Shell.dev ? 0 : h
++    exclusiveZone: Shell.dev ? 0 : Math.max(h, haloZone)
+     exclusionMode: Shell.dev ? ExclusionMode.Ignore : ExclusionMode.Normal
+     color: "transparent"
+     WlrLayershell.namespace: "angelos-macbar"
+--- a/.config/quickshell/angelos/modules/halo/HaloWindow.qml
++++ b/.config/quickshell/angelos/modules/halo/HaloWindow.qml
+@@ -534,7 +534,10 @@
+     // «Around it» is niri's title bars stepping round it, Desktop's only: in the Strip it keeps the
+     // strip (the browser's tabs were under it, 26.10)
+     readonly property string zoneMode: Config.halo.windows === "maximized" && !WindowConfig.floatAll ? "bar" : Config.halo.windows || "bar"
+-    exclusiveZone: Config.halo.reserve && zoneMode === "bar" && !Shell.dev ? strip : 0
++    // Golden Gate's menu bar reserves the shared strip. Wayland's -1 keeps Halo at
++    // the physical edge, ignoring that zone. Setting exclusiveZone also sets Normal,
++    // so a separate Ignore binding would be reset whenever the zone changed.
++    exclusiveZone: GoldenGate.on ? -1 : Config.halo.reserve && zoneMode === "bar" && !Shell.dev ? strip : 0
+     onStripChanged: Halo.strip = strip
+     readonly property int notch: Math.ceil(closedW + u * 8)
+     onNotchChanged: Halo.notch = notch

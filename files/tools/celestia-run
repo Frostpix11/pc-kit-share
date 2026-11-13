@@ -1,0 +1,16 @@
+#!/bin/bash
+# Селестия: обёртка параметров запуска для замеров. В Steam: celestia-run %command%
+# Настройки игры: ~/.config/celestia-run/<appid>.conf (bash), переменные:
+#   ENV=(VAR=value ...)   окружение игры
+#   WRAP=(cmd args ...)   обёртки перед игрой (mangohud, gamemoderun, gamescope ... --)
+#   ARGS=(-flag ...)      флаги в конец командной строки игры
+#   HOLD=("Заголовок" WxH) держать окно X11-игры в её разрешении (celestia-hold, angel-satellite)
+# Нет файла — игра запускается как есть.
+id="${SteamAppId:-${STEAM_COMPAT_APP_ID:-0}}"
+conf="$HOME/.config/celestia-run/$id.conf"
+ENV=(); WRAP=(); ARGS=(); HOLD=()
+[[ -r "$conf" ]] && source "$conf"
+{ echo "$(date '+%F %T') app=$id ENV=${ENV[*]} WRAP=${WRAP[*]} ARGS=${ARGS[*]}"; } >> "$HOME/.config/celestia-run/runs.log"
+for kv in "${ENV[@]}"; do export "$kv"; done
+[[ ${#HOLD[@]} -eq 2 ]] && { "$HOME/.local/bin/celestia-hold" "${HOLD[0]}" "${HOLD[1]}" >/dev/null 2>&1 & }
+exec "${WRAP[@]}" "$@" "${ARGS[@]}"

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "hunspell-en_us",
+    "url": "https://de3.mirror.archlinuxarm.org/aarch64/extra/hunspell-en_us-2026.02.25-1-any.pkg.tar.xz",
+    "sha256": "af9573e33c83a30ee68c4f2355f646fc8c8fa4f5395f120b4b60a1301ca8dea6",
+    "verification": "gpgv: Signature made Mon Mar  2 21:48:26 2026 EET\ngpgv:                using RSA key 68B3537F39A313B3E574D06777193F152BDBE6A6\ngpgv: Good signature from \"Arch Linux ARM Build System <builder@archlinuxarm.org>\"\n"
+  },
+  {
+    "name": "hunspell-ru",
+    "url": "https://de3.mirror.archlinuxarm.org/aarch64/extra/hunspell-ru-20210731-3-any.pkg.tar.xz",
+    "sha256": "68fbdcd91d78ecfc7be6f8f42eb22619558ff98853c1108e82c17888b9282eae",
+    "verification": "gpgv: Signature made Fri Apr 10 00:12:46 2026 EEST\ngpgv:                using RSA key 68B3537F39A313B3E574D06777193F152BDBE6A6\ngpgv: Good signature from \"Arch Linux ARM Build System <builder@archlinuxarm.org>\"\n"
+  }
+]

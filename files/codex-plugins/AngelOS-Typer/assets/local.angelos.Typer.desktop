@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=AngelOS Typer
+GenericName=Text Editor
+GenericName[ru]=Текстовый редактор
+Comment=Texts, Markdown and quick notes
+Comment[ru]=Тексты, Markdown и быстрые заметки
+Exec=angelos-typer %U
+Icon=local.angelos.Typer
+Terminal=false
+StartupNotify=true
+Categories=Utility;TextEditor;
+MimeType=text/plain;text/markdown;text/x-markdown;
+Keywords=text;notes;markdown;editor;
+Keywords[ru]=текст;заметки;редактор;блокнот;
+Actions=QuickNote;
+
+[Desktop Action QuickNote]
+Name=Quick Note
+Name[ru]=Быстрая заметка
+Exec=qs -c angelos ipc call typer-notes compose

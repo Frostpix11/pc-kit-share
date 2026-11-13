@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TikTok
+Comment=TikTok в отдельном окне Helium
+Exec=helium-browser --app=https://www.tiktok.com/
+Icon=tiktok
+StartupWMClass=chrome-www.tiktok.com__-Default
+Categories=AudioVideo;
+Keywords=tiktok;тикток;

@@ -1,0 +1,28 @@
+From 89428db0d956c4f4980e32d992f654a7bc4b0b31 Mon Sep 17 00:00:00 2001
+From: celestia <c@l>
+Date: Tue, 3 Nov 2026 11:59:18 +0200
+Subject: [PATCH] 0007: pinned program places follow desk-zero numbering
+
+---
+ src/remember.rs | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/remember.rs b/src/remember.rs
+index b5d7177c..5685cfff 100644
+--- a/src/remember.rs
++++ b/src/remember.rs
+@@ -144,7 +144,10 @@ pub fn apply(
+         }
+         return None;
+     }
++    // angel-niri (desk_zero.rs): the pin keeps the desk's number from 1, less one (what the shell
++    // reads back from windows.json); with desk 0 on, desk N is position N in the list, not N - 1
++    let pos = crate::desk_zero::index_to_pos(u8::try_from(spot.workspace_idx + 1).unwrap_or(u8::MAX));
+     on_output
+-        .find(|(_, idx, _)| *idx == spot.workspace_idx)
++        .find(|(_, idx, _)| *idx == pos)
+         .map(|(_, _, ws)| ws.id())
+ }
+-- 
+2.56.0
+

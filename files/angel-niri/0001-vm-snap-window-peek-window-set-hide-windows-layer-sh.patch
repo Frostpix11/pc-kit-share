@@ -1,0 +1,895 @@
+From 200d6920dde9ce72fae0ff3a577cc5c38c06314d Mon Sep 17 00:00:00 2001
+From: vm <vm@local>
+Date: Thu, 29 Oct 2026 19:56:36 +0200
+Subject: [PATCH] vm: snap-window, peek-window, set-hide-windows-layer,
+ show-desktop for the angelOS shell of e5f771c
+
+---
+ niri-config/src/binds.rs |  14 ++++
+ niri-ipc/src/lib.rs      |  72 +++++++++++++++++
+ src/hide_windows.rs      |  23 ++++++
+ src/input/mod.rs         |  13 +++
+ src/ipc/client.rs        |  17 ++++
+ src/layout/floating.rs   |  15 ++++
+ src/layout/mod.rs        |  30 +++++++
+ src/layout/tile.rs       |  18 +++++
+ src/lib.rs               |   4 +
+ src/niri.rs              |  33 ++++++--
+ src/peek.rs              |  27 +++++++
+ src/show_desktop.rs      | 123 +++++++++++++++++++++++++++++
+ src/snap_assist.rs       | 166 +++++++++++++++++++++++++++++++++++++++
+ src/stacking.rs          |  97 +++++++++++++++++------
+ 14 files changed, 623 insertions(+), 29 deletions(-)
+ create mode 100644 src/hide_windows.rs
+ create mode 100644 src/peek.rs
+ create mode 100644 src/show_desktop.rs
+ create mode 100644 src/snap_assist.rs
+
+diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
+index 0df59081..abcb7323 100644
+--- a/niri-config/src/binds.rs
++++ b/niri-config/src/binds.rs
+@@ -314,6 +314,14 @@ pub enum Action {
+     #[knuffel(skip)]
+     RequestWindowMenu(Option<u64>),
+     #[knuffel(skip)]
++    SnapWindow(Option<u64>, String),
++    #[knuffel(skip)]
++    PeekWindow(Option<u64>),
++    #[knuffel(skip)]
++    SetHideWindowsLayer(String, bool),
++    #[knuffel(skip)]
++    ShowDesktop(Option<String>),
++    #[knuffel(skip)]
+     SetCastOnlyLayer(String, bool),
+     #[knuffel(skip)]
+     SetPixelCorners(f64, u32),
+@@ -720,6 +728,12 @@ impl From<niri_ipc::Action> for Action {
+                 sticky,
+             } => Self::SetWindowFlags(id, shaded, on_top, sticky),
+             niri_ipc::Action::RequestWindowMenu { id } => Self::RequestWindowMenu(id),
++            niri_ipc::Action::SnapWindow { id, zone } => Self::SnapWindow(id, zone),
++            niri_ipc::Action::PeekWindow { id } => Self::PeekWindow(id),
++            niri_ipc::Action::SetHideWindowsLayer { namespace, on } => {
++                Self::SetHideWindowsLayer(namespace, on)
++            }
++            niri_ipc::Action::ShowDesktop { output } => Self::ShowDesktop(output),
+             niri_ipc::Action::MinimizeWindow { id, now: true } => Self::MinimizeWindowNow(id),
+             niri_ipc::Action::MinimizeWindow { id: None, .. } => Self::MinimizeWindow,
+             niri_ipc::Action::MinimizeWindow { id: Some(id), .. } => Self::MinimizeWindowById(id),
+diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
+index b2e2ba19..2fdf5b2a 100644
+--- a/niri-ipc/src/lib.rs
++++ b/niri-ipc/src/lib.rs
+@@ -772,6 +772,53 @@ pub enum Action {
+         #[serde(default)]
+         id: Option<u64>,
+     },
++    /// Snap a floating window to a part of its working area while stacking (angel-niri): `left`,
++    /// `right`, `top`, `bottom`, the quarters (`top-left` …), the thirds (`left-third`,
++    /// `middle-third`, `right-third`, `left-two-thirds`, `right-two-thirds`) or `maximized`; any
++    /// other zone gives it back its own place ([`Event::WindowSnapped`]).
++    #[cfg_attr(feature = "clap", clap(about = "Snap a window to a part of the screen"))]
++    SnapWindow {
++        /// Id of the window; the focused one if not given.
++        #[cfg_attr(feature = "clap", arg(long))]
++        #[serde(default)]
++        id: Option<u64>,
++        /// The part of the screen.
++        #[cfg_attr(feature = "clap", arg(long))]
++        zone: String,
++    },
++    /// Aero Peek (angel-niri): the other windows of the window's output fade away; without an id
++    /// they come back.
++    #[cfg_attr(feature = "clap", clap(about = "Peek at a window, the others faded away"))]
++    PeekWindow {
++        /// Id of the window; none brings the others back.
++        #[cfg_attr(feature = "clap", arg(long))]
++        #[serde(default)]
++        id: Option<u64>,
++    },
++    /// Hide the windows of an output while a layer-shell surface of this namespace is on it
++    /// (angel-niri): the desktop under it, as under a Mac's Mission Control.
++    #[cfg_attr(
++        feature = "clap",
++        clap(about = "Hide the windows under a layer namespace")
++    )]
++    SetHideWindowsLayer {
++        /// The layer-shell namespace.
++        #[cfg_attr(feature = "clap", arg(long))]
++        namespace: String,
++        /// Hide them (`true`, the default) or not.
++        #[serde(default = "default_true")]
++        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
++        on: bool,
++    },
++    /// Show the desktop (angel-niri, while stacking): the windows part to the side edges and come
++    /// back with the same call, a window focused or a new one.
++    #[cfg_attr(feature = "clap", clap(about = "Show the desktop"))]
++    ShowDesktop {
++        /// Output name; the focused one if not given.
++        #[cfg_attr(feature = "clap", arg(long))]
++        #[serde(default)]
++        output: Option<String>,
++    },
+     /// Show a layer-shell namespace only to screencasts (angel-niri).
+     ///
+     /// Its surfaces are drawn into screencasts (OBS through the portal) but not on the monitor,
+@@ -2272,6 +2319,31 @@ pub enum Event {
+         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+         green: bool,
+     },
++    /// Where a floating window sits snapped changed while stacking (angel-niri).
++    WindowSnapped {
++        /// Id of the window.
++        id: u64,
++        /// Output of its workspace.
++        output: String,
++        /// The part it fills (`snap-window` zones), empty when it no longer sits snapped.
++        zone: String,
++        /// The room the parts divide on that output, x, y, w, h in logical pixels.
++        area: [f64; 4],
++    },
++    /// A floating window is dragged near the top of an output while stacking (angel-niri): the
++    /// shell shows its snap bar there.
++    WindowDraggedNearTop {
++        /// Id of the window.
++        id: u64,
++        /// Output the pointer is on.
++        output: String,
++        /// Where the pointer is on that output, in logical pixels; none once it left the top.
++        #[serde(default)]
++        pos: Option<[f64; 2]>,
++        /// Let go there.
++        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
++        dropped: bool,
++    },
+     /// A toplevel window was closed.
+     WindowClosed {
+         /// Id of the removed window.
+diff --git a/src/hide_windows.rs b/src/hide_windows.rs
+new file mode 100644
+index 00000000..20ca4616
+--- /dev/null
++++ b/src/hide_windows.rs
+@@ -0,0 +1,23 @@
++//! angel-niri (for angelOS's Mission Control, the shell's services/Mission): `niri msg action
++//! set-hide-windows-layer --namespace NS [--on false]`: while a layer-shell surface of that
++//! namespace is on an output, the output's windows are not drawn there — the desktop (the
++//! background and bottom layers) shows under it, as under a Mac's Mission Control, whose cards
++//! show the windows instead. Screencasts and screenshots see the same. Nothing goes to niri's
++//! config.
++
++use std::sync::Mutex;
++
++static NAMESPACES: Mutex<Vec<String>> = Mutex::new(Vec::new());
++
++pub fn set(namespace: String, on: bool) {
++    let mut namespaces = NAMESPACES.lock().unwrap();
++    namespaces.retain(|ns| *ns != namespace);
++    if on {
++        namespaces.push(namespace);
++    }
++}
++
++/// Whether a layer surface of this namespace hides the windows of its output.
++pub fn hides(namespace: &str) -> bool {
++    NAMESPACES.lock().unwrap().iter().any(|ns| ns == namespace)
++}
+diff --git a/src/input/mod.rs b/src/input/mod.rs
+index 7afc9611..975ea36f 100644
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -1070,6 +1070,19 @@ impl State {
+             Action::RequestWindowMenu(id) => {
+                 self.request_window_menu(id);
+             }
++            Action::SnapWindow(id, zone) => {
++                self.snap_window(id, &zone);
++            }
++            Action::PeekWindow(id) => {
++                self.peek_window(id);
++            }
++            Action::SetHideWindowsLayer(namespace, on) => {
++                crate::hide_windows::set(namespace, on);
++                self.niri.queue_redraw_all();
++            }
++            Action::ShowDesktop(output) => {
++                self.show_desktop(output);
++            }
+             Action::SetCastPause(on, image, background) => {
+                 if let Err(err) =
+                     crate::cast_pause::set(on, image.as_deref(), background.as_deref())
+diff --git a/src/ipc/client.rs b/src/ipc/client.rs
+index 14bb3f61..b16e3157 100644
+--- a/src/ipc/client.rs
++++ b/src/ipc/client.rs
+@@ -492,6 +492,23 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
+                         let what = if green { "size menu" } else { "menu" };
+                         println!("Window {what} requested: id {id}, on {output} at {pos:?}");
+                     }
++                    Event::WindowSnapped {
++                        id,
++                        output,
++                        zone,
++                        area,
++                    } => {
++                        println!("Window snapped: id {id}, on {output}, zone {zone:?} of {area:?}");
++                    }
++                    Event::WindowDraggedNearTop {
++                        id,
++                        output,
++                        pos,
++                        dropped,
++                    } => {
++                        let what = if dropped { "dropped" } else { "dragged" };
++                        println!("Window {what} near the top: id {id}, on {output} at {pos:?}");
++                    }
+                     Event::WindowClosed { id } => {
+                         println!("Window closed: {id}");
+                     }
+diff --git a/src/layout/floating.rs b/src/layout/floating.rs
+index 971db742..4858559d 100644
+--- a/src/layout/floating.rs
++++ b/src/layout/floating.rs
+@@ -574,6 +574,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
+         }
+     }
+ 
++    /// angel-niri (snap_assist.rs): the room the snapped parts divide for this window: the working
++    /// area below what is kept at the top for it.
++    pub fn snap_room(&self, id: &W::Id) -> Option<Rectangle<f64, Logical>> {
++        let idx = self.idx_of(id)?;
++        let output = self.output_name.as_deref();
++        let tile = &self.tiles[idx];
++        Some(snap_rect(output, self.view_size.w, tile, Snap::Maximized, self.working_area))
++    }
++
++    /// angel-niri (show_desktop.rs): where the window is, in workspace coordinates.
++    pub fn window_rect(&self, id: &W::Id) -> Option<Rectangle<f64, Logical>> {
++        let idx = self.idx_of(id)?;
++        Some(Rectangle::new(self.data[idx].logical_pos, self.data[idx].size))
++    }
++
+     /// angel-niri (stacking.rs): where the window sits snapped, if it does.
+     pub fn snap(&self, id: &W::Id) -> Option<Snap> {
+         self.idx_of(id).and_then(|idx| self.data[idx].snap)
+diff --git a/src/layout/mod.rs b/src/layout/mod.rs
+index 842139f1..c5f7cbdf 100644
+--- a/src/layout/mod.rs
++++ b/src/layout/mod.rs
+@@ -5519,6 +5519,36 @@ impl<W: LayoutElement> Layout<W> {
+             .map(|(_, _, ws)| ws.floating().snap(window))
+     }
+ 
++    /// angel-niri (snap_assist.rs): the window being dragged while stacking, its output and where
++    /// the pointer is on it.
++    pub fn stacking_drag(&self) -> Option<(&W, &Output, Point<f64, Logical>)> {
++        let move_ = self.interactive_move.as_ref()?.moving()?;
++        (crate::stacking::on() && move_.is_floating && !self.overview_open).then(|| {
++            (
++                move_.tile.window(),
++                &move_.output,
++                move_.pointer_pos_within_output,
++            )
++        })
++    }
++
++    /// angel-niri (peek.rs): Aero Peek — the tiles of the active workspace of `keep`'s output
++    /// but `keep` fade away; `None` brings back what faded.
++    pub fn peek(&mut self, keep: Option<(&W::Id, &Output)>) {
++        let config = self.options.animations.window_movement.0;
++        for mon in self.monitors_mut() {
++            let keep_here = keep.filter(|(_, output)| mon.output() == *output);
++            let active = mon.active_workspace_idx;
++            for (idx, ws) in mon.workspaces.iter_mut().enumerate() {
++                for tile in ws.tiles_mut() {
++                    let fade = idx == active
++                        && keep_here.is_some_and(|(id, _)| tile.window().id() != id);
++                    tile.peek(fade, config);
++                }
++            }
++        }
++    }
++
+     /// angel-niri (stacking.rs): snaps a floating window, or gives it back its own place.
+     pub fn set_floating_snap(&mut self, window: &W::Id, snap: Option<crate::stacking::Snap>) {
+         if let Some(ws) = self
+diff --git a/src/layout/tile.rs b/src/layout/tile.rs
+index e5501d92..3077c737 100644
+--- a/src/layout/tile.rs
++++ b/src/layout/tile.rs
+@@ -114,6 +114,9 @@ pub struct Tile<W: LayoutElement> {
+     /// The animation of the tile's opacity.
+     pub(super) alpha_animation: Option<AlphaAnimation>,
+ 
++    /// angel-niri (peek.rs): faded away while another window is peeked at.
++    peeked: bool,
++
+     /// Offset during the initial interactive move rubberband.
+     pub(super) interactive_move_offset: Point<f64, Logical>,
+ 
+@@ -265,6 +268,7 @@ impl<W: LayoutElement> Tile<W> {
+             move_x_animation: None,
+             move_y_animation: None,
+             alpha_animation: None,
++            peeked: false,
+             interactive_move_offset: Point::from((0., 0.)),
+             squash: None,
+             wobble: None,
+@@ -990,6 +994,20 @@ impl<W: LayoutElement> Tile<W> {
+         });
+     }
+ 
++    /// angel-niri (peek.rs): fades away while another window is peeked at, or comes back.
++    pub fn peek(&mut self, fade: bool, config: niri_config::Animation) {
++        if fade == self.peeked {
++            return;
++        }
++        self.peeked = fade;
++        if fade {
++            self.animate_alpha(1., 0., config);
++            self.hold_alpha_animation_after_done();
++        } else {
++            self.animate_alpha(0., 1., config);
++        }
++    }
++
+     pub fn ensure_alpha_animates_to_1(&mut self) {
+         if let Some(alpha) = &self.alpha_animation {
+             if alpha.anim.to() != 1. {
+diff --git a/src/lib.rs b/src/lib.rs
+index b25bd8a4..dbb1bc90 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -6,6 +6,10 @@ pub mod a11y;
+ pub mod animation;
+ pub mod backend;
+ pub mod cast_only;
++pub mod hide_windows;
++pub mod peek;
++pub mod show_desktop;
++pub mod snap_assist;
+ pub mod cast_pause;
+ pub mod cli;
+ pub mod clipboard_keep;
+diff --git a/src/niri.rs b/src/niri.rs
+index c0164ab2..566e1f2e 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -924,6 +924,8 @@ impl State {
+         self.niri.refresh_window_rules();
+         self.refresh_ipc_outputs();
+         self.ipc_refresh_layout();
++        // angel-niri (snap_assist.rs, show_desktop.rs)
++        self.refresh_snap_assist();
+         self.ipc_refresh_keyboard_layout_index();
+         self.ipc_refresh_touchpad();
+ 
+@@ -4766,13 +4768,21 @@ impl Niri {
+ 
+         // When rendering above the top layer, we put the regular monitor elements first.
+         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
++        // angel-niri (hide_windows.rs): no windows under such a layer, the desktop shows
++        let hide_windows = (layer_map.layers()).any(|l| crate::hide_windows::hides(l.namespace()));
++
+         if mon.render_above_top_layer() {
+-            self.layout
+-                .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
++            if !hide_windows {
++                self.layout.render_interactive_move_for_output(ctx.r(), output, &mut |elem| {
++                    push(elem.into())
++                });
++            }
+ 
+             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
+ 
+-            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
++            if !hide_windows {
++                mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
++            }
+ 
+             push_popups_from_layer!(Layer::Top);
+             push_normal_from_layer!(Layer::Top);
+@@ -4790,8 +4800,11 @@ impl Niri {
+             push_popups_from_layer!(Layer::Top);
+             push_normal_from_layer!(Layer::Top);
+ 
+-            self.layout
+-                .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
++            if !hide_windows {
++                self.layout.render_interactive_move_for_output(ctx.r(), output, &mut |elem| {
++                    push(elem.into())
++                });
++            }
+ 
+             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
+ 
+@@ -4813,7 +4826,9 @@ impl Niri {
+                 push_popups_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
+             }
+ 
+-            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
++            if !hide_windows {
++                mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
++            }
+ 
+             for (ws, geo) in mon.workspaces_with_render_geo() {
+                 // The render element namespace. This will be set to the workspace index for
+@@ -4831,7 +4846,11 @@ impl Niri {
+ 
+             // angel-niri (scene.rs): windows behind the scene, between the bottom and background
+             // layers (workspaces don't overlap, so all of them here keeps each one's order).
+-            mon.render_workspaces_behind_scene(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
++            if !hide_windows {
++                mon.render_workspaces_behind_scene(ctx.r(), focus_ring, &mut |elem| {
++                    push(elem.into())
++                });
++            }
+ 
+             for (ws, geo) in mon.workspaces_with_render_geo() {
+                 let ns = Some(ws.id().get() as usize);
+diff --git a/src/peek.rs b/src/peek.rs
+new file mode 100644
+index 00000000..3a9c3411
+--- /dev/null
++++ b/src/peek.rs
+@@ -0,0 +1,27 @@
++//! angel-niri (for angelOS's Aero Peek, the shell's modules/bar/parts/Tasks): `peek-window --id N`
++//! — the other windows of N's output fade away (their tiles' alpha down to nothing, held), only N
++//! stays; `peek-window` without an id brings them back. Nothing else changes: focus, order and
++//! places stay as they were.
++
++use std::cell::Cell;
++
++use crate::niri::State;
++
++thread_local! {
++    static PEEKED: Cell<Option<u64>> = const { Cell::new(None) };
++}
++
++impl State {
++    pub fn peek_window(&mut self, id: Option<u64>) {
++        if PEEKED.replace(id) == id {
++            return;
++        }
++        let keep = id.and_then(|id| {
++            (self.niri.layout.windows())
++                .find(|(_, m)| m.id().get() == id)
++                .and_then(|(mon, m)| Some((m.window.clone(), mon?.output().clone())))
++        });
++        self.niri.layout.peek(keep.as_ref().map(|(window, output)| (window, output)));
++        self.niri.queue_redraw_all();
++    }
++}
+diff --git a/src/show_desktop.rs b/src/show_desktop.rs
+new file mode 100644
+index 00000000..2b1b388f
+--- /dev/null
++++ b/src/show_desktop.rs
+@@ -0,0 +1,123 @@
++//! angel-niri (for angelOS's «Показать стол», the shell's services/DeskMenu): `show-desktop
++//! [--output NAME]` parts the floating windows of the output's active workspace to the side edges
++//! in one motion, as on a Mac — each to the nearer one, a sliver of it left on screen — and they
++//! come back to their places (snapped ones to their parts: moving keeps the snap) with the same
++//! call again, a window focused (a click on a sliver, the taskbar) or a new one opened.
++//!
++//! shortcut: tiled windows (not stacking) stay where they are.
++
++use std::cell::RefCell;
++
++use niri_ipc::PositionChange;
++use smithay::utils::{Logical, Point};
++
++use crate::niri::State;
++
++/// How much of a parted window stays on screen.
++const SLIVER: f64 = 24.;
++
++struct Parted {
++    /// The windows and where they were, relative to the working area.
++    windows: Vec<(u64, Point<f64, Logical>)>,
++    focus: Option<u64>,
++    count: usize,
++    workspace: u64,
++}
++
++thread_local! {
++    static PARTED: RefCell<Option<Parted>> = const { RefCell::new(None) };
++}
++
++impl State {
++    pub fn show_desktop(&mut self, output: Option<String>) {
++        if PARTED.with_borrow(|p| p.is_some()) {
++            self.show_desktop_back();
++            return;
++        }
++        let active = self.niri.layout.active_output().cloned();
++        let Some(mon) = self.niri.layout.monitors().find(|mon| match &output {
++            Some(name) => mon.output_name() == name,
++            None => Some(mon.output()) == active.as_ref(),
++        }) else {
++            return;
++        };
++        let ws = mon.active_workspace_ref();
++        let area = ws.working_area();
++        let floating = ws.floating();
++        let mut windows = Vec::new();
++        let mut moves = Vec::new();
++        for tile in floating.tiles() {
++            let mapped = tile.window();
++            let Some(rect) = floating.window_rect(&mapped.window) else {
++                continue;
++            };
++            let left = rect.loc.x + rect.size.w / 2. < area.loc.x + area.size.w / 2.;
++            let x = if left {
++                SLIVER - rect.size.w
++            } else {
++                area.size.w - SLIVER
++            };
++            windows.push((mapped.id().get(), rect.loc - area.loc));
++            moves.push((mapped.window.clone(), x, rect.loc.y - area.loc.y));
++        }
++        if moves.is_empty() {
++            return;
++        }
++        let parted = Parted {
++            windows,
++            focus: self.niri.layout.focus().map(|m| m.id().get()),
++            count: ws.windows().count(),
++            workspace: ws.id().get(),
++        };
++        for (window, x, y) in moves {
++            self.niri.layout.move_floating_window(
++                Some(&window),
++                PositionChange::SetFixed(x),
++                PositionChange::SetFixed(y),
++                true,
++            );
++        }
++        PARTED.set(Some(parted));
++        self.niri.queue_redraw_all();
++    }
++
++    fn show_desktop_back(&mut self) {
++        let Some(parted) = PARTED.take() else {
++            return;
++        };
++        for (id, pos) in parted.windows {
++            let Some(window) = (self.niri.layout.windows())
++                .find(|(_, m)| m.id().get() == id)
++                .map(|(_, m)| m.window.clone())
++            else {
++                continue;
++            };
++            if self.niri.layout.floating_snap(&window).is_none() {
++                continue;
++            }
++            self.niri.layout.move_floating_window(
++                Some(&window),
++                PositionChange::SetFixed(pos.x),
++                PositionChange::SetFixed(pos.y),
++                true,
++            );
++        }
++        self.niri.queue_redraw_all();
++    }
++
++    /// Once a refresh: a window focused or opened on the parted workspace brings them back.
++    pub fn refresh_show_desktop(&mut self) {
++        let Some((focus, count, workspace)) =
++            PARTED.with_borrow(|p| p.as_ref().map(|p| (p.focus, p.count, p.workspace)))
++        else {
++            return;
++        };
++        let now = self.niri.layout.focus().map(|m| m.id().get());
++        let here = (self.niri.layout.workspaces())
++            .find(|(_, _, ws)| ws.id().get() == workspace)
++            .map(|(_, _, ws)| ws.windows().count());
++        if now != focus || here.is_none_or(|n| n > count) {
++            self.show_desktop_back();
++        }
++    }
++}
+diff --git a/src/snap_assist.rs b/src/snap_assist.rs
+new file mode 100644
+index 00000000..872899ea
+--- /dev/null
++++ b/src/snap_assist.rs
+@@ -0,0 +1,166 @@
++//! angel-niri (for angelOS's Snap Layouts, the shell's services/SnapAssist): `snap-window --zone Z
++//! [--id N]` snaps a floating window to a part of its working area while stacking — the halves,
++//! the quarters, the thirds (stacking.rs `Snap`); and the shell hears where windows sit snapped
++//! and where a dragged one is:
++//!
++//!   `Event::WindowSnapped`         every change — dragged to an edge, Mod+arrows, a zone asked
++//!                                  for, left — with the room the parts divide (zone "" when it
++//!                                  no longer sits snapped)
++//!   `Event::WindowDraggedNearTop`  while a window is dragged near the top of an output, where the
++//!                                  pointer is on it (the shell's snap bar comes down there); no
++//!                                  pos once it leaves, `dropped` when let go there
++//!
++//! Both are read off the layout once a refresh, not sent from each place that snaps; a snap asked
++//! for again (a zone, Mod+arrow, a window let go) goes out even when it is where it was, so the
++//! shell offers the rest of its layout every time.
++
++use std::cell::RefCell;
++use std::collections::{HashMap, HashSet};
++
++use niri_ipc::Event;
++
++use crate::niri::State;
++use crate::stacking::Snap;
++
++/// How near the top of its output the pointer brings the snap bar down, in logical pixels.
++const NEAR_TOP: f64 = 120.;
++
++/// A window dragged: its id, its output and where the pointer is near the top (if it is).
++type Drag = (u64, String, Option<[f64; 2]>);
++
++thread_local! {
++    static SNAPS: RefCell<HashMap<u64, (String, Snap)>> = RefCell::new(HashMap::new());
++    static DRAG: RefCell<Option<Drag>> = const { RefCell::new(None) };
++    static ASKED: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
++}
++
++/// The window's snap was asked for: the shell hears it at the next refresh, changed or not.
++pub fn asked(id: u64) {
++    ASKED.with_borrow_mut(|asked| asked.insert(id));
++}
++
++impl State {
++    /// Snaps a floating window (the focused one without an id) to `zone`; an unknown zone gives
++    /// it back its own place and size.
++    pub fn snap_window(&mut self, id: Option<u64>, zone: &str) {
++        if !crate::stacking::on() {
++            return;
++        }
++        let focused = self.niri.layout.focus().map(|m| m.id().get());
++        let Some(id) = id.or(focused) else {
++            return;
++        };
++        let Some(window) = (self.niri.layout.windows())
++            .find(|(_, m)| m.id().get() == id)
++            .map(|(_, m)| m.window.clone())
++        else {
++            return;
++        };
++        // a tiled window has no part of the screen to fill
++        if self.niri.layout.floating_snap(&window).is_none() {
++            return;
++        }
++        asked(id);
++        self.niri.layout.set_floating_snap(&window, Snap::from_name(zone));
++        self.niri.queue_redraw_all();
++    }
++
++    /// Once a refresh: the snaps and the drag near the top that changed go to the shell.
++    pub fn refresh_snap_assist(&mut self) {
++        let mut events = Vec::new();
++
++        let drag = (self.niri.layout.stacking_drag())
++            .map(|(mapped, output, pos)| (mapped.id().get(), output.name(), pos));
++        let dragged = drag.as_ref().map(|(id, _, _)| *id);
++        DRAG.with_borrow_mut(|last| match drag {
++            Some((id, output, pos)) => {
++                let near = (pos.y < NEAR_TOP).then(|| [pos.x.round(), pos.y.round()]);
++                let was_near = last.as_ref().is_some_and(|(_, _, pos)| pos.is_some());
++                let now = (id, output, near);
++                if (near.is_some() || was_near) && last.as_ref() != Some(&now) {
++                    events.push(Event::WindowDraggedNearTop {
++                        id,
++                        output: now.1.clone(),
++                        pos: near,
++                        dropped: false,
++                    });
++                }
++                *last = Some(now);
++            }
++            None => {
++                // let go: where it lands (an edge, or not) counts as asked
++                if let Some((id, _, _)) = last.as_ref() {
++                    asked(*id);
++                }
++                if let Some((id, output, Some(pos))) = last.take() {
++                    events.push(Event::WindowDraggedNearTop {
++                        id,
++                        output,
++                        pos: Some(pos),
++                        dropped: true,
++                    });
++                }
++            }
++        });
++
++        let mut snapped = HashMap::new();
++        let mut free = Vec::new();
++        for (mon, _, ws) in self.niri.layout.workspaces() {
++            let Some(mon) = mon else {
++                continue;
++            };
++            let floating = ws.floating();
++            for tile in floating.tiles() {
++                let mapped = tile.window();
++                let id = mapped.id().get();
++                match floating.snap(&mapped.window) {
++                    Some(snap) => {
++                        let room = floating.snap_room(&mapped.window).unwrap_or_default();
++                        let area = [room.loc.x, room.loc.y, room.size.w, room.size.h];
++                        snapped.insert(id, (mon.output_name().clone(), snap, area));
++                    }
++                    None => free.push(id),
++                }
++            }
++        }
++        let asked = ASKED.take();
++        SNAPS.with_borrow_mut(|snaps| {
++            for (&id, (output, snap, area)) in &snapped {
++                if asked.contains(&id) || snaps.get(&id) != Some(&(output.clone(), *snap)) {
++                    events.push(Event::WindowSnapped {
++                        id,
++                        output: output.clone(),
++                        zone: snap.name().to_owned(),
++                        area: *area,
++                    });
++                }
++            }
++            for id in free {
++                if let Some((output, _)) = snaps.get(&id) {
++                    events.push(Event::WindowSnapped {
++                        id,
++                        output: output.clone(),
++                        zone: String::new(),
++                        area: [0.; 4],
++                    });
++                }
++            }
++            // a window dragged is out of its workspace meanwhile: it keeps its part till it lands
++            let held = dragged.and_then(|id| snaps.get(&id).cloned().map(|was| (id, was)));
++            *snaps = (snapped.into_iter())
++                .map(|(id, (output, snap, _))| (id, (output, snap)))
++                .collect();
++            if let Some((id, was)) = held {
++                snaps.entry(id).or_insert(was);
++            }
++        });
++
++        if let Some(server) = &self.niri.ipc_server {
++            for event in events {
++                server.send_transient_event(event);
++            }
++        }
++
++        self.refresh_show_desktop();
++    }
++}
+diff --git a/src/stacking.rs b/src/stacking.rs
+index 463616b0..1a5178e9 100644
+--- a/src/stacking.rs
++++ b/src/stacking.rs
+@@ -80,34 +80,84 @@ pub enum Snap {
+     TopRight,
+     BottomLeft,
+     BottomRight,
++    // angel-niri (snap_assist.rs): the shell's Snap Layouts' other parts
++    Top,
++    Bottom,
++    LeftThird,
++    MiddleThird,
++    RightThird,
++    LeftTwoThirds,
++    RightTwoThirds,
+ }
+ 
+ impl Snap {
+-    /// The part of `area` it fills, below `inset` kept at the top (`top_room()`).
++    /// The part of `area` it fills, below `inset` kept at the top (`top_room()`): its fractions
++    /// of the room, the edges rounded (the shell's SnapAssist.rectOf cuts the same).
+     pub fn rect(self, mut area: Rectangle<f64, Logical>, inset: f64) -> Rectangle<f64, Logical> {
+         let inset = inset.min(area.size.h / 2.);
+         area.loc.y += inset;
+         area.size.h -= inset;
+-        let mut rect = area;
+-        let (half_w, half_h) = ((area.size.w / 2.).round(), (area.size.h / 2.).round());
+-        if !matches!(self, Snap::Maximized) {
+-            rect.size.w = half_w;
+-        }
+-        if matches!(self, Snap::Right | Snap::TopRight | Snap::BottomRight) {
+-            rect.loc.x += half_w;
+-            rect.size.w = area.size.w - half_w;
+-        }
+-        if matches!(
+-            self,
+-            Snap::TopLeft | Snap::TopRight | Snap::BottomLeft | Snap::BottomRight
+-        ) {
+-            rect.size.h = half_h;
+-        }
+-        if matches!(self, Snap::BottomLeft | Snap::BottomRight) {
+-            rect.loc.y += half_h;
+-            rect.size.h = area.size.h - half_h;
+-        }
+-        rect
++        let [fx, fy, fw, fh] = self.fractions();
++        let (w, h) = (area.size.w, area.size.h);
++        let (x0, x1) = ((w * fx).round(), (w * (fx + fw)).round());
++        let (y0, y1) = ((h * fy).round(), (h * (fy + fh)).round());
++        Rectangle::new(
++            Point::from((area.loc.x + x0, area.loc.y + y0)),
++            Size::from((x1 - x0, y1 - y0)),
++        )
++    }
++
++    /// x, y, w, h of the room.
++    fn fractions(self) -> [f64; 4] {
++        use Snap::*;
++        let (third, half) = (1. / 3., 0.5);
++        match self {
++            Maximized => [0., 0., 1., 1.],
++            Left => [0., 0., half, 1.],
++            Right => [half, 0., half, 1.],
++            Top => [0., 0., 1., half],
++            Bottom => [0., half, 1., half],
++            TopLeft => [0., 0., half, half],
++            TopRight => [half, 0., half, half],
++            BottomLeft => [0., half, half, half],
++            BottomRight => [half, half, half, half],
++            LeftThird => [0., 0., third, 1.],
++            MiddleThird => [third, 0., third, 1.],
++            RightThird => [2. * third, 0., third, 1.],
++            LeftTwoThirds => [0., 0., 2. * third, 1.],
++            RightTwoThirds => [third, 0., 2. * third, 1.],
++        }
++    }
++
++    /// Its name for the shell (`snap-window --zone`, `Event::WindowSnapped`).
++    pub fn name(self) -> &'static str {
++        use Snap::*;
++        match self {
++            Maximized => "maximized",
++            Left => "left",
++            Right => "right",
++            Top => "top",
++            Bottom => "bottom",
++            TopLeft => "top-left",
++            TopRight => "top-right",
++            BottomLeft => "bottom-left",
++            BottomRight => "bottom-right",
++            LeftThird => "left-third",
++            MiddleThird => "middle-third",
++            RightThird => "right-third",
++            LeftTwoThirds => "left-two-thirds",
++            RightTwoThirds => "right-two-thirds",
++        }
++    }
++
++    pub fn from_name(name: &str) -> Option<Snap> {
++        use Snap::*;
++        [
++            Maximized, Left, Right, Top, Bottom, TopLeft, TopRight, BottomLeft, BottomRight,
++            LeftThird, MiddleThird, RightThird, LeftTwoThirds, RightTwoThirds,
++        ]
++        .into_iter()
++        .find(|snap| snap.name() == name)
+     }
+ }
+ 
+@@ -612,12 +662,15 @@ impl State {
+         if !on() {
+             return false;
+         }
+-        let Some(window) = self.niri.layout.focus().map(|m| m.window.clone()) else {
++        let Some((window, id)) = (self.niri.layout.focus()).map(|m| (m.window.clone(), m.id().get()))
++        else {
+             return false;
+         };
+         let Some(snap) = self.niri.layout.floating_snap(&window) else {
+             return false;
+         };
++        // angel-niri (snap_assist.rs): the shell offers the rest of the layout again
++        crate::snap_assist::asked(id);
+         match arrow(snap, key) {
+             Some(to) => self.niri.layout.set_floating_snap(&window, to),
+             None => self.request_minimize(&window),
+-- 
+2.56.0
+

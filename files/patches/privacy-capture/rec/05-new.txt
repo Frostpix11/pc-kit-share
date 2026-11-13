@@ -1,0 +1,15 @@
+  # kit-patch privacy: pieces of both recorders (a game came or went): rec-switch.py glue makes
+  # one file of them (the picture joined as it is, the sound matched across each swap)
+  kinds=0; [[ -f "$EVENTS" ]] && kinds=$(awk -F'\t' '$1=="start"{print $3}' "$EVENTS" | sort -u | wc -l)
+  if [[ -f "$KITREC" && $kinds -gt 1 && -f "$PARTS" && $(wc -l <"$PARTS") -gt 1 ]]; then
+    notify "Склеиваю запись…" "игра и рабочий стол — в один файл"
+    glued="$(dirname "$outfile")/.$(basename "${outfile%.mp4}")-all.mp4"
+    if python3 "$KITREC" glue "$EVENTS" "$glued" "$FPS" >>/tmp/niri-record-region.log 2>&1; then
+      mv -f "$glued" "$outfile"
+      tail -n +2 "$PARTS" | while IFS= read -r f; do rm -f "$f"; done
+    else
+      rm -f "$glued"
+      notify "Куски записи не склеились" "они лежат рядом: $(dirname "$outfile")"
+    fi
+  # more than one piece (it was paused): glued into the first, without re-encoding
+  elif [[ -f "$PARTS" && $(wc -l <"$PARTS") -gt 1 ]]; then

@@ -1,0 +1,1 @@
+notify "Запись ${FPS} fps · $(rec_label)"

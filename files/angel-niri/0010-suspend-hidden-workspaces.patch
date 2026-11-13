@@ -1,0 +1,100 @@
+diff --git a/src/layout/mod.rs b/src/layout/mod.rs
+index a1c646ab..1cb3151a 100644
+--- a/src/layout/mod.rs
++++ b/src/layout/mod.rs
+@@ -376,6 +376,8 @@ pub trait LayoutElement {
+         false
+     }
+     fn set_minimized(&mut self, _minimized: bool) {}
++    /// angel-niri: tells the window whether its workspace is out of sight now.
++    fn set_hidden(&mut self, _hidden: bool) {}
+     fn is_minimized(&self) -> bool {
+         false
+     }
+@@ -5368,8 +5370,15 @@ impl<W: LayoutElement> Layout<W> {
+                         mon.dnd_scroll_gesture_end();
+                     }
+ 
++                    // angel-niri: only the active workspace is seen, unless the overview or a
++                    // switch (animation or gesture) shows the others too.
++                    let all_seen = self.overview_open || mon.workspace_switch.is_some();
+                     for (ws_idx, ws) in mon.workspaces.iter_mut().enumerate() {
+                         let is_focused = is_active && ws_idx == mon.active_workspace_idx;
++                        let hidden = !all_seen && ws_idx != mon.active_workspace_idx;
++                        for win in ws.windows_mut() {
++                            win.set_hidden(hidden);
++                        }
+                         ws.refresh(is_active, is_focused);
+ 
+                         if let Some(is_scrolling) = ongoing_scrolling_dnd {
+diff --git a/src/window/mapped.rs b/src/window/mapped.rs
+index b80f1ac5..6560fd0e 100644
+--- a/src/window/mapped.rs
++++ b/src/window/mapped.rs
+@@ -101,6 +101,11 @@ pub struct Mapped {
+     /// angel-niri: whether this window is minimized (kept out of the layout).
+     is_minimized: bool,
+ 
++    /// angel-niri: on a workspace nobody sees now (not the active one, no overview, no switch).
++    is_hidden: bool,
++    /// angel-niri: Suspended as last put in the pending state.
++    is_suspended: bool,
++
+     /// angel-niri (scene.rs): marked to stand behind a wallpaper scene's nearer things, and
+     /// whether it is drawn so now.
+     behind_scene: bool,
+@@ -314,6 +319,8 @@ impl Mapped {
+             is_active_in_column: true,
+             is_floating: false,
+             is_minimized: false,
++            is_hidden: false,
++            is_suspended: false,
+             behind_scene: false,
+             render_behind_scene: false,
+             is_window_cast_target: false,
+@@ -691,6 +698,24 @@ impl Mapped {
+         self.is_minimized
+     }
+ 
++    /// angel-niri: a window nobody can see (minimized, or on a hidden workspace and not being
++    /// cast) is Suspended, so it may stop drawing; satellite passes it on to X11 apps as
++    /// _NET_WM_STATE_HIDDEN.
++    fn update_suspended(&mut self) {
++        let suspended = self.is_minimized || (self.is_hidden && !self.is_window_cast_target);
++        if suspended == self.is_suspended {
++            return;
++        }
++        self.is_suspended = suspended;
++        self.toplevel().with_pending_state(|state| {
++            if suspended {
++                state.states.set(xdg_toplevel::State::Suspended);
++            } else {
++                state.states.unset(xdg_toplevel::State::Suspended);
++            }
++        });
++    }
++
+     pub fn behind_scene(&self) -> bool {
+         self.behind_scene
+     }
+@@ -1122,14 +1147,12 @@ impl LayoutElement for Mapped {
+ 
+     fn set_minimized(&mut self, minimized: bool) {
+         self.is_minimized = minimized;
+-        // A minimized window is not visible: let it stop drawing.
+-        self.toplevel().with_pending_state(|state| {
+-            if minimized {
+-                state.states.set(xdg_toplevel::State::Suspended);
+-            } else {
+-                state.states.unset(xdg_toplevel::State::Suspended);
+-            }
+-        });
++        self.update_suspended();
++    }
++
++    fn set_hidden(&mut self, hidden: bool) {
++        self.is_hidden = hidden;
++        self.update_suspended();
+     }
+ 
+     fn is_minimized(&self) -> bool {

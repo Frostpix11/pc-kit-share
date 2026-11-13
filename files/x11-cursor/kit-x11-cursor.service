@@ -1,0 +1,11 @@
+[Unit]
+Description=angelOS kit: X11 default cursor follows the cursor theme (Steam, Wine)
+After=niri.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/angelos-kit/x11-cursor/x11-cursor-sync
+
+[Install]
+WantedBy=graphical-session.target

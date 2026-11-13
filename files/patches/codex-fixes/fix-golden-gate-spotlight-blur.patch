@@ -1,0 +1,47 @@
+--- a/.config/quickshell/angelos/modules/bar/StartOverlay.qml
++++ b/.config/quickshell/angelos/modules/bar/StartOverlay.qml
+@@ -141,6 +141,19 @@
+         // (the pixel Spotlight's pill and list are near opaque; its box is mostly air. Golden
+         // Gate's is Liquid Glass: blur under its capsule and its results only)
+         readonly property var macLook: win.style === "mac" && body.item && body.item.capsuleItem ? body.item : null
++        // Region.item watches the item's own geometry, not the Loader's animated
++        // position/scale. Bind the blur to surface coordinates so it follows the glass.
++        function macBlurRect(item) {
++            if (!item || !item.visible)
++                return Qt.rect(0, 0, 0, 0);
++            const s = body.scale;
++            const o = body.transformOrigin;
++            const ox = [Item.TopLeft, Item.Left, Item.BottomLeft].includes(o) ? 0 : [Item.TopRight, Item.Right, Item.BottomRight].includes(o) ? body.width : body.width / 2;
++            const oy = [Item.TopLeft, Item.Top, Item.TopRight].includes(o) ? 0 : [Item.BottomLeft, Item.Bottom, Item.BottomRight].includes(o) ? body.height : body.height / 2;
++            const x = body.x + ox * (1 - s) + (body.item.x + item.x) * s;
++            const y = body.y + oy * (1 - s) + (body.item.y + item.y) * s;
++            return Qt.rect(Math.floor(x), Math.floor(y), Math.ceil(x + item.width * s) - Math.floor(x), Math.ceil(y + item.height * s) - Math.floor(y));
++        }
+         BackgroundEffect.blurRegion: !win.shown ? null : win.macLook ? (GoldenGate.blurOn ? macBlur : null) : Config.appearance.blur && !win.spot ? blurRegion : null
+         Region {
+             id: blurRegion
+@@ -149,12 +162,20 @@
+         Region {
+             id: macBlur
+             Region {
+-                item: win.macLook ? win.macLook.capsuleItem : null
+-                radius: win.macLook ? win.macLook.capsuleItem.radius : 0
++                readonly property rect bounds: win.macBlurRect(win.macLook ? win.macLook.capsuleItem : null)
++                x: bounds.x
++                y: bounds.y
++                width: bounds.width
++                height: bounds.height
++                radius: win.macLook ? Math.round(win.macLook.capsuleItem.radius * body.scale) : 0
+             }
+             Region {
+-                item: win.macLook && win.macLook.panelItem.visible ? win.macLook.panelItem : null
+-                radius: win.macLook ? win.macLook.panelItem.radius : 0
++                readonly property rect bounds: win.macBlurRect(win.macLook ? win.macLook.panelItem : null)
++                x: bounds.x
++                y: bounds.y
++                width: bounds.width
++                height: bounds.height
++                radius: win.macLook ? Math.round(win.macLook.panelItem.radius * body.scale) : 0
+             }
+         }
+ 

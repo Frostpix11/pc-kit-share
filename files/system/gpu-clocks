@@ -1,0 +1,19 @@
+#!/bin/sh
+# angelOS (scripts/gpu-clocks-setup.sh): the NVIDIA graphics clock locked while a game runs.
+# Селестия 2026-11-02: with our undervolt (nvidia-gpu-offset.service: curve +200 MHz) the clock
+# must never go past CAP — the top of the shifted curve is a real overclock (Xid 109 in CS2).
+# So `game` locks [60 % of CAP, CAP] and `reset` goes back to [210, CAP], never to no lock.
+# Original: gpu-clocks.angelos-orig (scripts/gpu-clocks-setup.sh rewrites this file).
+PATH=/usr/bin:/bin
+CAP=1950
+case "$1" in
+  game)
+    max=$(nvidia-smi --query-gpu=clocks.max.graphics --format=csv,noheader,nounits | head -n1 | tr -dc 0-9)
+    [ -n "$max" ] || exit 1
+    [ "$max" -gt "$CAP" ] && max=$CAP
+    exec nvidia-smi --lock-gpu-clocks=$((max * 6 / 10)),"$max" ;;
+  reset)
+    exec nvidia-smi --lock-gpu-clocks=210,"$CAP" ;;
+  *)
+    echo "usage: gpu-clocks game|reset" >&2; exit 2 ;;
+esac

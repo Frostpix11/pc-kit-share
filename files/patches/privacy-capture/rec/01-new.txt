@@ -1,0 +1,6 @@
+end_piece() {
+  local pid; pid=$(<"$PIDFILE")
+  local began; began=$(stat -c %Y "$PIDFILE")
+  # kit-patch privacy: when the piece was told to stop (rec-switch.py cuts the overlaps by it)
+  printf 'end\t%s\t%s\n' "$(awk -F'\t' '$1=="start"{f=$2} END{print f}' "$EVENTS" 2>/dev/null)" "$(now_ms)" >>"$EVENTS"
+  kill -INT "$pid" 2>/dev/null || true

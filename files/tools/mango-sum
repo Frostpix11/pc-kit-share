@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Сводка логов MangoHud: средний FPS, 1% и 0.1% low (по frametime), p99 frametime, стабильность.
+mango-sum [файлы.csv ...]   без аргументов: 10 последних логов из ~/mangologs"""
+import csv, glob, os, statistics, sys
+
+def frames(path):
+    with open(path, newline="") as f:
+        rows = list(csv.reader(f))
+    for i, r in enumerate(rows):
+        if r and r[0].strip() == "fps" and "frametime" in r:
+            ft = r.index("frametime")
+            return [float(x[ft]) for x in rows[i + 1:] if len(x) > ft and x[ft]]
+    return []
+
+def low(ft, pct):
+    # «1% low» = средний FPS худшего 1% кадров (как у CapFrameX)
+    worst = sorted(ft, reverse=True)[:max(1, int(len(ft) * pct / 100))]
+    return 1000 / statistics.mean(worst)
+
+files = sys.argv[1:] or sorted(glob.glob(os.path.expanduser("~/mangologs/*.csv")), key=os.path.getmtime)[-10:]
+files = [f for f in files if not f.endswith("_summary.csv")]
+print(f"{'лог':42} {'кадров':>7} {'avg':>7} {'1%':>7} {'0.1%':>7} {'p99 мс':>7}")
+for f in files:
+    ft = frames(f)
+    if len(ft) < 100:
+        print(f"{os.path.basename(f)[:42]:42} мало кадров ({len(ft)})"); continue
+    avg = 1000 / statistics.mean(ft)
+    p99 = sorted(ft)[int(len(ft) * 0.99)]
+    print(f"{os.path.basename(f)[:42]:42} {len(ft):7d} {avg:7.1f} {low(ft,1):7.1f} {low(ft,0.1):7.1f} {p99:7.2f}")

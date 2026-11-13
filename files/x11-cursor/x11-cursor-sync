@@ -1,0 +1,15 @@
+#!/bin/bash
+# angelOS pc-kit (fixes): X11's own default cursor follows the cursor theme.
+# xwayland-satellite / Xwayland keep the XCURSOR_THEME they started with, so after Classic ↔
+# Golden Gate an X11 app (Steam, Wine) shows the old theme wherever it sets no cursor of its own
+# (Steam's top strip). angelOS's cursors.py rewrites ~/.icons/default/index.theme on every switch;
+# kit-x11-cursor.path runs this then and at login: the root window gets the theme's arrow
+# (xsetroot, libXcursor in our environment), and windows without a cursor inherit it at once.
+theme="$(sed -n 's/^Inherits=//p' "$HOME/.icons/default/index.theme" 2>/dev/null | head -1)"
+[[ -n "$theme" ]] || exit 0
+size="$(gsettings get org.gnome.desktop.interface cursor-size 2>/dev/null)"
+[[ "$size" =~ ^[0-9]+$ ]] || size=24
+display="${DISPLAY:-$(systemctl --user show-environment 2>/dev/null | sed -n 's/^DISPLAY=//p')}"
+[[ -n "$display" ]] && command -v xsetroot >/dev/null || exit 0
+DISPLAY="$display" XCURSOR_THEME="$theme" XCURSOR_SIZE="$size" xsetroot -cursor_name left_ptr \
+  && echo "X11: курсор по умолчанию → $theme ($size)"

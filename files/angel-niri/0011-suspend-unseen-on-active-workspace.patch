@@ -1,0 +1,45 @@
+diff --git a/src/layout/mod.rs b/src/layout/mod.rs
+index 1cb3151a..952d642f 100644
+--- a/src/layout/mod.rs
++++ b/src/layout/mod.rs
+@@ -5376,8 +5376,12 @@ impl<W: LayoutElement> Layout<W> {
+                     for (ws_idx, ws) in mon.workspaces.iter_mut().enumerate() {
+                         let is_focused = is_active && ws_idx == mon.active_workspace_idx;
+                         let hidden = !all_seen && ws_idx != mon.active_workspace_idx;
++                        // on the shown workspace: a window scrolled out of the view, a tab behind
++                        // another, one under a fullscreen window isn't seen either
++                        let seen = if hidden || all_seen { None } else { ws.seen_window_ids() };
+                         for win in ws.windows_mut() {
+-                            win.set_hidden(hidden);
++                            let unseen = seen.as_ref().is_some_and(|s| !s.contains(win.id()));
++                            win.set_hidden(hidden || unseen);
+                         }
+                         ws.refresh(is_active, is_focused);
+ 
+diff --git a/src/layout/workspace.rs b/src/layout/workspace.rs
+index 1a309965..e4e82968 100644
+--- a/src/layout/workspace.rs
++++ b/src/layout/workspace.rs
+@@ -393,6 +393,22 @@ impl<W: LayoutElement> Workspace<W> {
+         self.scrolling.are_transitions_ongoing() || self.floating.are_transitions_ongoing()
+     }
+ 
++    /// angel-niri: the windows anyone can see on this workspace now (drawn and inside the view);
++    /// None while something moves (a scroll, an open/close, a resize): then every one counts.
++    pub fn seen_window_ids(&self) -> Option<Vec<W::Id>> {
++        if self.are_animations_ongoing() {
++            return None;
++        }
++        let view = Rectangle::from_size(self.view_size());
++        let mut seen = Vec::new();
++        for (tile, pos, visible) in self.tiles_with_render_positions() {
++            if visible && Rectangle::new(pos, tile.tile_size()).overlaps(view) {
++                seen.push(tile.window().id().clone());
++            }
++        }
++        Some(seen)
++    }
++
+     pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
+         // angel-niri (inactive_dim.rs): the dots only on some outputs
+         crate::inactive_dim::enter(self.output.as_ref());

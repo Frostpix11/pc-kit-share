@@ -1,0 +1,19 @@
+Use your image generation tool to create ONE new image, then save it as ./day-raw.png in the current directory and print its path. Do not write code to draw it — use image generation.
+
+Subject: a cozy, quiet mountain lake valley — a wallpaper for a desktop (wide 16:9 landscape, 1536x864 or the closest wide size you can make).
+
+Composition (left to right, keep the middle-top calm because desktop clock and widgets sit there):
+- Big soft sky taking the top ~45%, with a few large, rounded, layered cumulus clouds, lit softly from the side.
+- Far layered mountain ridges fading into haze, a little snow on the highest peak.
+- A calm lake across the middle third, mirror-like reflections of mountains and clouds, a few horizontal light glints on the water.
+- Right-centre foreground shore: a small wooden cabin with a pitched roof, a stone chimney, ONE warm glowing window; a short wooden pier going into the lake with a hanging lantern on a post at its end; a small rowing boat tied to the pier.
+- Left foreground: a cluster of tall pine trees and some soft grass, a few small flowers, framing the scene.
+- No people, no text, no logos, no UI, no border.
+
+Style — this is the important part:
+- Genuine PIXEL ART, like the attached style reference (style-ref.png, from the same desktop): clearly visible square pixels, about 480x270 art pixels across the whole image (so each art pixel is a crisp square block), hand-placed clusters, clean outlines of shapes by colour (no black outlines), light ordered dithering only in the sky gradient and the haze. No blur, no anti-aliasing, no painterly brush strokes, no photographic detail, no noise.
+- Colour: the soft modern pastel palette attached (palette-ref.png): deep navy-indigo shadows, periwinkle and lavender sky, powder pink and peach on cloud edges, mint/teal water, muted sage greens for pines, warm amber only for the cabin window and the lantern. Calm, cozy, dreamy, slightly desaturated, high harmony — like a modern rounded "soft glass" desktop theme, but drawn as pixel art.
+- Time of day: late afternoon DAY (clear light, sun out of frame to the right). Not sunset, not night — night and dusk versions will be made from this one.
+- Large calm shapes, not busy; the image must read well behind desktop windows.
+
+Output: only the image file ./day-raw.png, then print its absolute path.

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Селестия, 2026-11-06: kitty без explicit sync. С ним окно с Claude после сна уходило в вечный
+# цикл внутри драйвера NVIDIA и теряло текст: 4 зависания из 5 снов, без него 0 из 4 и ни одной
+# ошибки semsurf. Только для kitty: niri и игры остаются с explicit sync. Программы, запущенные
+# из терминала, эту переменную не наследуют (env в опции -o).
+export __NV_DISABLE_EXPLICIT_SYNC=1
+exec /usr/bin/kitty -o env=__NV_DISABLE_EXPLICIT_SYNC "$@"

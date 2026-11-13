@@ -1,0 +1,63 @@
+#!/bin/bash
+# Селестия, 2026-11-06: после сна проверить EasyEffects.
+# При пробуждении USB-устройства на миг пропадают: EasyEffects откатывается на виртуальные
+# Celestia Voice, виснет, и микрофон со звуком молчат. Вечное зависание kitty лечится не здесь,
+# а обёрткой ~/.local/bin/kitty (__NV_DISABLE_EXPLICIT_SYNC); уход на чистый стол перед сном
+# проверяли, он не помог и убран.
+#
+#   celestia-sleep post      после nvidia-resume (root): проверить EasyEffects
+#   celestia-sleep ee-status связи EasyEffects, от пользователя
+#   celestia-sleep ee-fix    перезапустить EasyEffects, от пользователя
+# Любая ошибка здесь не мешает сну: всегда выход 0.
+
+USER_NAME=frostpix
+USER_ID=1000
+RC=/home/$USER_NAME/.config/easyeffects/db/easyeffectsrc
+EE_UNIT='app-easyeffects\x2dservice@autostart.service'
+
+say() { echo "celestia-sleep: $*"; }
+as_user() {
+  if [ "$(id -u)" = "$USER_ID" ]; then "$@"; else
+    runuser -u "$USER_NAME" -- env XDG_RUNTIME_DIR=/run/user/$USER_ID \
+      DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$USER_ID/bus "$@"
+  fi
+}
+post() {
+  sleep 6     # USB возвращается, EasyEffects успевает подключиться сам
+  for _ in 1 2 3 4; do ee_ok && { say "EasyEffects на месте"; return; }; sleep 3; done
+  say "EasyEffects не на своих устройствах: $(ee_why). Перезапускаю"
+  ee_fix
+}
+
+rc_value() { sed -n "s/^$1=//p" "$RC" 2>/dev/null | head -1; }
+links() { as_user pw-link -l 2>/dev/null; }
+ee_why() {
+  local in l; in=$(rc_value inputDevice)
+  pgrep -x easyeffects >/dev/null || { echo "не запущен"; return; }
+  # without a listener EasyEffects drops its links and that is fine: a short recording wakes the
+  # input chain, and only then the links say something. Output has none while nothing plays
+  as_user timeout 2 parecord --raw /dev/null >/dev/null 2>&1 &
+  sleep 1.2
+  l=$(links)
+  wait
+  grep -q -- '-> ee_s\|<- ee_s' <<<"$l" && grep -A3 '^celestia_voice' <<<"$l" | grep -q 'ee_s' && echo "подключён к Celestia Voice"
+  grep -q "^$in:" <<<"$l" && ! grep -A3 "^$in:capture_FL" <<<"$l" | grep -q -- '|-> ee_sie_' && echo "вход не от $in"
+}
+ee_ok() { [ -z "$(ee_why)" ]; }
+ee_fix() {
+  # it may be stuck in a futex and deaf to SIGTERM and --quit (06.11)
+  pkill -9 -x easyeffects; sleep 1
+  rm -f /run/user/$USER_ID/EasyEffectsServer
+  as_user systemctl --user reset-failed "$EE_UNIT" 2>/dev/null
+  as_user systemctl --user restart "$EE_UNIT"
+  sleep 8
+  ee_ok && say "EasyEffects перезапущен, всё на месте" || say "после перезапуска: $(ee_why)"
+}
+
+case "${1:-}" in
+  post) post ;;
+  ee-status) ee_ok && echo ok || ee_why ;;
+  ee-fix) ee_fix ;;
+  *) echo "usage: celestia-sleep post|ee-status|ee-fix" >&2 ;;
+esac
+exit 0

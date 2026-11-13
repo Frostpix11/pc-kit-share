@@ -1,0 +1,63 @@
+From 1792d76d39db6eb3e687227be3619b4498172f1f Mon Sep 17 00:00:00 2001
+From: celestia <c@l>
+Date: Tue, 3 Nov 2026 15:28:25 +0200
+Subject: [PATCH] =?UTF-8?q?0009:=20eyedropper=20no=20longer=20hangs=20niri?=
+ =?UTF-8?q?=20=E2=80=94=20the=20camera=20doesn't=20ask=20the=20pointer=20i?=
+ =?UTF-8?q?n=20a=20render=20without=20it?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+PickColorGrab renders from inside the pointer grab, with smithay's pointer
+Mutex held; camera::update asked pointer.current_location() -> self-deadlock
+(futex wait forever, screen and input frozen). Renders without the pointer
+now take camera::current().
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/niri.rs | 29 ++++++++++++++++++-----------
+ 1 file changed, 18 insertions(+), 11 deletions(-)
+
+diff --git a/src/niri.rs b/src/niri.rs
+index ab701667..784ac094 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -4742,17 +4742,24 @@ impl Niri {
+         };
+ 
+         // angel-niri (camera.rs): the screen zoomed in on the pointer and following it; worked out
+-        // first, the pointer is drawn where its spot shows
+-        let camera = self.global_space.output_geometry(output).and_then(|out_geo| {
+-            let ptr = self.seat.get_pointer().unwrap().current_location();
+-            let inside = out_geo.to_f64().contains(ptr);
+-            crate::camera::update(
+-                &output.name(),
+-                self.clock.now(),
+-                inside.then(|| ptr - out_geo.loc.to_f64()),
+-                output_size(output),
+-            )
+-        });
++        // first, the pointer is drawn where its spot shows. Only the screen's own frame (always
++        // with the pointer) moves the camera; a render without the pointer (the eyedropper, a
++        // capture) takes the camera as last worked out: the eyedropper renders from inside a
++        // pointer grab, with the pointer's lock held, so asking the pointer here hung niri dead
++        let camera = if !include_pointer {
++            crate::camera::current(&output.name())
++        } else {
++            self.global_space.output_geometry(output).and_then(|out_geo| {
++                let ptr = self.seat.get_pointer().unwrap().current_location();
++                let inside = out_geo.to_f64().contains(ptr);
++                crate::camera::update(
++                    &output.name(),
++                    self.clock.now(),
++                    inside.then(|| ptr - out_geo.loc.to_f64()),
++                    output_size(output),
++                )
++            })
++        };
+ 
+         // angel-niri (desk_throw.rs): a broken screen over everything, the pointer too: it sinks
+         // into the dead zone like the rest of the picture (the backend keeps it off the cursor
+-- 
+2.56.0
+

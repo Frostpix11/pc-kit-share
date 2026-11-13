@@ -1,0 +1,244 @@
+diff --git a/src/server/event.rs b/src/server/event.rs
+index df13fd2..fafc2df 100644
+--- a/src/server/event.rs
++++ b/src/server/event.rs
+@@ -540,8 +540,14 @@ pub(super) fn update_surface_viewport(
+     let dims = &window_data.attrs.dims;
+     let size_hints = &window_data.attrs.size_hints;
+ 
++    // angel-satellite (Селестия, pc-kit): a held window is drawn at the compositor's size
++    let held = window_data
++        .hold_factor()
++        .and(window_data.wl_size)
++        .map(|(w, h)| (w as i32, h as i32));
+     let (x_width, x_height) = xwl
+         .and_then(|v| v.destination)
++        .or(held)
+         .unwrap_or((dims.width as i32, dims.height as i32));
+     let width = (x_width as f64 / scale_factor.0).ceil() as i32;
+     let height = (x_height as f64 / scale_factor.0).ceil() as i32;
+@@ -737,7 +743,11 @@ impl Event for client::wl_pointer::Event {
+                     Some((Some([_, _, sw, sh]), Some((dw, dh)))) => {
+                         (sw / dw as f64, sh / dh as f64)
+                     }
+-                    _ => (1.0, 1.0),
++                    // angel-satellite (Селестия, pc-kit): a held window, scaled by satellite itself
++                    _ => surface_entity
++                        .and_then(|e| state.world.get::<&WindowData>(e).ok())
++                        .and_then(|w| w.hold_factor())
++                        .unwrap_or((1.0, 1.0)),
+                 };
+                 let surface_is_popup = matches!(role, SurfaceRole::Popup(_));
+                 let mut do_enter = || {
+@@ -827,11 +837,22 @@ impl Event for client::wl_pointer::Event {
+                         return;
+                     }
+                 }
++                // angel-satellite (Селестия, pc-kit): a held window, scaled by satellite itself
++                let (hold_x, hold_y) = state
++                    .world
++                    .get::<&CurrentSurface>(target)
++                    .ok()
++                    .and_then(|c| match &*c {
++                        CurrentSurface::Xwayland(e) => Some(*e),
++                        CurrentSurface::Decoration(_) => None,
++                    })
++                    .and_then(|e| state.world.get::<&WindowData>(e).ok().and_then(|w| w.hold_factor()))
++                    .unwrap_or((1.0, 1.0));
+                 let (server, scale) = state
+                     .world
+                     .query_one_mut::<(&WlPointer, &SurfaceScaleFactor)>(target)
+                     .unwrap();
+-                let (x, y) = (surface_x * scale.0, surface_y * scale.0);
++                let (x, y) = (surface_x * scale.0 * hold_x, surface_y * scale.0 * hold_y);
+                 trace!(target: "pointer_position", "pointer motion {x} {y}");
+                 server.motion(time, x, y);
+             }
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index b02d8c7..2a0f3b6 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -143,6 +143,8 @@ struct WindowData {
+     wl_size: Option<(u16, u16)>,
+     /// angel-satellite: `_ANGEL_SATELLITE_STRETCH` (width, height), see `crop`.
+     stretch: Option<(u16, u16)>,
++    /// angel-satellite (Селестия, pc-kit): `_ANGEL_SATELLITE_HOLD` (width, height), see `hold_factor`.
++    hold: Option<(u16, u16)>,
+ }
+ 
+ impl WindowData {
+@@ -155,6 +157,27 @@ impl WindowData {
+             .iter()
+             .find(|r| r[0] == self.output_offset.x && r[1] == self.output_offset.y)
+             .map(|r| (r[2] as u16, r[3] as u16))
++            // a held size (`_ANGEL_SATELLITE_HOLD`) works like an emulated resolution the game
++            // never asked Xwayland for: CS2 at 4:3 in its borderless fullscreen
++            .or(self.hold)
++    }
++
++    /// angel-satellite (Селестия, pc-kit): a game held at a smaller size (`_ANGEL_SATELLITE_HOLD`,
++    /// set by whoever knows its resolution — CS2 at 1280x960 never changes the screen's mode and
++    /// stretches its own picture by nearest pixels) keeps its X window at that size while
++    /// fullscreen; satellite's viewport stretches it to the compositor's size, which scales it
++    /// smoothly. Xwayland doesn't know of this viewport, so the pointer is scaled here: this is the
++    /// factor from the compositor's coordinates to the window's, while the hold is in effect.
++    fn hold_factor(&self) -> Option<(f64, f64)> {
++        let (hw, hh) = self.hold?;
++        let (ww, wh) = self.wl_size?;
++        let dims = &self.attrs.dims;
++        let in_effect = self.emu_rects.is_empty()
++            && (dims.width, dims.height) == (hw, hh)
++            && (ww, wh) != (hw, hh)
++            && ww > 0
++            && wh > 0;
++        in_effect.then(|| (f64::from(hw) / f64::from(ww), f64::from(hh) / f64::from(wh)))
+     }
+ 
+     /// angel-satellite: a borderless fullscreen game that renders a smaller picture into the
+@@ -183,6 +206,7 @@ impl WindowData {
+             emu_rects: Vec::new(),
+             wl_size: None,
+             stretch: None,
++            hold: None,
+         }
+     }
+ 
+@@ -1116,6 +1140,51 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
+         update_surface_viewport(&self.world, self.world.query_one(entity).unwrap());
+     }
+ 
++    /// angel-satellite (Селестия, pc-kit): see `WindowData::hold_factor`. A fullscreen window is
++    /// resized at once, to the held size or back to the compositor's.
++    pub fn set_hold(&mut self, window: x::Window, hold: Option<(u16, u16)>) {
++        let Some(entity) = self.windows.get(&window).copied() else {
++            debug!("not setting hold for unknown window {window:?}");
++            return;
++        };
++        let Ok(data) = self.world.entity(entity) else {
++            return;
++        };
++        let mut win = data.get::<&mut WindowData>().unwrap();
++        let hold = hold.filter(|(w, h)| *w > 0 && *h > 0);
++        if win.hold == hold {
++            return;
++        }
++        debug!("{window:?} hold: {hold:?}");
++        win.hold = hold;
++
++        let fullscreen = data
++            .get::<&SurfaceRole>()
++            .is_some_and(|r| matches!(&*r, SurfaceRole::Toplevel(Some(t)) if t.fullscreen));
++        if !fullscreen {
++            return;
++        }
++        let Some((width, height)) = win.emulated_size().or(win.wl_size) else {
++            return;
++        };
++        win.attrs.dims.width = width;
++        win.attrs.dims.height = height;
++        let dims = win.attrs.dims;
++        drop(win);
++        self.world
++            .insert_one(
++                entity,
++                PendingSurfaceState {
++                    x: dims.x as _,
++                    y: dims.y as _,
++                    width: width as _,
++                    height: height as _,
++                },
++            )
++            .unwrap();
++        update_surface_viewport(&self.world, self.world.query_one(entity).unwrap());
++    }
++
+     /// angel-satellite: see `WindowData::crop`.
+     pub fn set_stretch(&mut self, window: x::Window, stretch: Option<(u16, u16)>) {
+         let Some(entity) = self.windows.get(&window).copied() else {
+@@ -1827,3 +1896,30 @@ pub struct PendingSurfaceState {
+     pub width: i32,
+     pub height: i32,
+ }
++
++#[cfg(test)]
++mod hold_tests {
++    use super::*;
++
++    fn win(w: u16, h: u16) -> WindowData {
++        WindowData::new(false, WindowDims { x: 0, y: 0, width: w, height: h }, None)
++    }
++
++    #[test]
++    fn a_held_window_scales_the_pointer_only_while_held() {
++        let mut d = win(1920, 1080);
++        d.wl_size = Some((1920, 1080));
++        assert_eq!(d.hold_factor(), None, "no hold");
++        d.hold = Some((1280, 960));
++        assert_eq!(d.emulated_size(), Some((1280, 960)));
++        assert_eq!(d.hold_factor(), None, "the window is not at the held size yet");
++        d.attrs.dims.width = 1280;
++        d.attrs.dims.height = 960;
++        let (fx, fy) = d.hold_factor().unwrap();
++        assert!((fx - 1280. / 1920.).abs() < 1e-9 && (fy - 960. / 1080.).abs() < 1e-9);
++        // Xwayland's own emulation wins: it scales the pointer itself
++        d.emu_rects = vec![[0, 0, 800, 600]];
++        assert_eq!(d.emulated_size(), Some((800, 600)));
++        assert_eq!(d.hold_factor(), None);
++    }
++}
+diff --git a/src/xstate/mod.rs b/src/xstate/mod.rs
+index eb0494a..09ee3c9 100644
+--- a/src/xstate/mod.rs
++++ b/src/xstate/mod.rs
+@@ -683,6 +683,7 @@ impl XState {
+             server_state.set_emu_rects(window, rects);
+         }
+         server_state.set_stretch(window, self.get_stretch(window)?);
++        server_state.set_hold(window, self.get_hold(window)?);
+ 
+         let transient_for = self.get_transient_for(window)?;
+         let override_redirect = self.get_override_redirect(window)?;
+@@ -821,6 +822,19 @@ impl XState {
+             .map(Option::flatten)
+     }
+ 
++    /// angel-satellite (Селестия, pc-kit): `_ANGEL_SATELLITE_HOLD` (width, height).
++    fn get_hold(&self, window: x::Window) -> XResult<Option<(u16, u16)>> {
++        let cookie =
++            self.get_property_cookie(window, self.atoms.angel_hold, x::ATOM_CARDINAL, 2);
++        let resolver = |reply: x::GetPropertyReply| match reply.value::<u32>() {
++            [w, h] => Some((*w as u16, *h as u16)),
++            _ => None,
++        };
++        PropertyCookieWrapper::new(&self.connection, cookie)
++            .resolve(resolver)
++            .map(Option::flatten)
++    }
++
+     fn get_wm_size_hints(&self, window: x::Window) -> XResult<Option<WmNormalHints>> {
+         let cookie =
+             self.get_property_cookie(window, x::ATOM_WM_NORMAL_HINTS, x::ATOM_WM_SIZE_HINTS, 9);
+@@ -898,6 +912,15 @@ impl XState {
+         if self.handle_selection_property_change(&event) {
+             return;
+         }
++        if event.atom() == self.atoms.angel_hold {
++            let hold = if event.state() == x::Property::Delete {
++                None
++            } else {
++                unwrap_or_skip_bad_window_ret!(self.get_hold(event.window()))
++            };
++            server_state.set_hold(event.window(), hold);
++            return;
++        }
+         if event.atom() == self.atoms.angel_stretch {
+             let stretch = if event.state() == x::Property::Delete {
+                 None
+@@ -1010,6 +1033,7 @@ xcb::atoms_struct! {
+         moveresize => b"_NET_WM_MOVERESIZE" only_if_exists = false,
+         xwayland_emu_rects => b"_XWAYLAND_RANDR_EMU_MONITOR_RECTS" only_if_exists = false,
+         angel_stretch => b"_ANGEL_SATELLITE_STRETCH" only_if_exists = false,
++        angel_hold => b"_ANGEL_SATELLITE_HOLD" only_if_exists = false,
+         xdnd_aware => b"XdndAware" only_if_exists = false,
+         xdnd_proxy => b"XdndProxy" only_if_exists = false,
+         xdnd_selection => b"XdndSelection" only_if_exists = false,

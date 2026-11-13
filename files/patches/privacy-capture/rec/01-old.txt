@@ -1,0 +1,4 @@
+end_piece() {
+  local pid; pid=$(<"$PIDFILE")
+  local began; began=$(stat -c %Y "$PIDFILE")
+  kill -INT "$pid" 2>/dev/null || true

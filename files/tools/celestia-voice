@@ -1,0 +1,49 @@
+#!/bin/bash
+# Celestia Voice: start w-okada (deiteris fork) server, open its UI in a dedicated
+# Helium app window (own profile); closing that window stops the server completely.
+DIR="$HOME/apps/w-okada/MMVCServerSIO"
+STATE="$HOME/.local/share/celestia-voice"
+PROFILE="$STATE/browser"
+LOG="$STATE/server.log"
+URL="http://127.0.0.1:18888/"
+mkdir -p "$PROFILE"
+
+notify() { notify-send -a "Celestia Voice" -i audio-input-microphone "Celestia Voice" "$1" 2>/dev/null; }
+
+# already open? just focus nothing, tell the user
+if pgrep -f -- "--user-data-dir=$PROFILE" >/dev/null; then
+    notify "Уже запущено"
+    exit 0
+fi
+
+OWN=0
+if ! pgrep -x MMVCServerSIO >/dev/null; then
+    cd "$DIR" || { notify "Не найдена папка $DIR"; exit 1; }
+    setsid ./MMVCServerSIO >"$LOG" 2>&1 </dev/null &
+    SRV=$!
+    OWN=1
+fi
+
+stop_server() {
+    [ "$OWN" = 1 ] || return
+    pkill -TERM -x MMVCServerSIO
+    for _ in $(seq 1 20); do pgrep -x MMVCServerSIO >/dev/null || return; sleep 0.25; done
+    pkill -KILL -x MMVCServerSIO
+}
+trap stop_server EXIT INT TERM
+
+notify "Запускаю сервер..."
+for _ in $(seq 1 120); do
+    ss -ltn 2>/dev/null | grep -q ':18888 ' && break
+    if [ "$OWN" = 1 ] && ! kill -0 "$SRV" 2>/dev/null; then
+        notify "Сервер упал при старте, лог: $LOG"
+        exit 1
+    fi
+    sleep 0.5
+done
+ss -ltn 2>/dev/null | grep -q ':18888 ' || { notify "Сервер не поднялся за 60 с, лог: $LOG"; exit 1; }
+
+# dedicated profile => this process lives until the window is closed
+helium-browser --user-data-dir="$PROFILE" --no-first-run --no-default-browser-check \
+    --class=celestia-voice --app="$URL" >/dev/null 2>&1
+# window closed -> trap stops the server

@@ -1,0 +1,27 @@
+diff --git a/src/handlers/xdg_shell.rs b/src/handlers/xdg_shell.rs
+index f9c62ef9..e0138479 100644
+--- a/src/handlers/xdg_shell.rs
++++ b/src/handlers/xdg_shell.rs
+@@ -1496,11 +1496,21 @@ impl State {
+         let window_rules = &config.window_rules;
+ 
+         if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
+-            let new_rules = ResolvedWindowRules::compute(
++            let mut new_rules = ResolvedWindowRules::compute(
+                 window_rules,
+                 WindowRef::Unmapped(unmapped),
+                 self.niri.is_at_startup,
+             );
++            // angel-niri (remember.rs): the program's pin fills in again what the rules leave
++            // unset — a title change before the first frame (Strata opened on a folder) used to
++            // drop it, and the pinned floating window opened tiled
++            let _ = crate::remember::apply(
++                &self.niri.remember,
++                &self.niri.layout,
++                &mut new_rules,
++                toplevel,
++                self.niri.is_at_startup,
++            );
+             if let InitialConfigureState::Configured { rules, .. } = &mut unmapped.state {
+                 *rules = new_rules;
+             }

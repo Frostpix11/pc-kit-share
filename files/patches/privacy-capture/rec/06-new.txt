@@ -1,0 +1,1 @@
+  rm -f "$PAUSED" "$PARTS" "$ACC" "$GEOM" "$EVENTS" "$PARTS.want"  # kit-patch privacy: + the swaps' log
