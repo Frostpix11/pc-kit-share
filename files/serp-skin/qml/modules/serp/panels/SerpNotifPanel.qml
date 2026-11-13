@@ -52,7 +52,7 @@ Item {
                 SIcon {
                     name: "trash-2"
                 }
-                onClicked: Notifs.clearHistory()
+                onClicked: Serp.clearNotifs()  // the cards fly off first
             }
         }
         ListView {

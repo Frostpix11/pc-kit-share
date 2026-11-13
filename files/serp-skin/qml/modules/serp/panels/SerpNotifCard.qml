@@ -10,6 +10,32 @@ import qs.modules.serp
 Rectangle {
     id: card
     required property var modelData
+    required property int index
+    // «clear all» (Serp.clearNotifs): off to the right like a swipe, one after another from the top
+    property bool leaving: false
+    Connections {
+        target: Serp
+        function onNotifsClearingChanged() {
+            if (Serp.notifsClearing)
+                leave.restart();
+        }
+    }
+    SequentialAnimation {
+        id: leave
+        PauseAnimation {
+            duration: Math.min(card.index, 8) * 35
+        }
+        ScriptAction {
+            script: card.leaving = true
+        }
+        NumberAnimation {
+            target: card
+            property: "x"
+            to: card.width * 1.15
+            duration: 260
+            easing.type: Easing.InCubic
+        }
+    }
     readonly property bool critical: modelData.urgency === NotificationUrgency.Critical
     implicitHeight: lay.implicitHeight + Serp.px(16)
     radius: Serp.radiusSmall
@@ -19,7 +45,7 @@ Rectangle {
     x: drag.active ? x : 0
     opacity: 1 - Math.min(1, Math.abs(x) / width * 1.4)
     Behavior on x {
-        enabled: !drag.active
+        enabled: !drag.active && !card.leaving
         NumberAnimation {
             duration: Serp.normal
             easing.type: Easing.OutCubic

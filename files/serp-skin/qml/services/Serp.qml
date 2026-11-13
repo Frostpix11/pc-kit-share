@@ -314,6 +314,27 @@ Singleton {
     }
     // the bar's tray orb opens / gathers (SerpBar): `qs -c angelos ipc call serp tray`, a key bind
     signal trayToggled(string screen)
+    // «clear all» notifications: the cards fly off to the right one after another (SerpNotifCard,
+    // 35 ms apart, at most 8 steps), then the history goes. Motion off: at once
+    property bool notifsClearing: false
+    function clearNotifs() {
+        if (notifsClearing)
+            return;
+        if (Motion.still) {
+            Notifs.clearHistory();
+            return;
+        }
+        notifsClearing = true;
+        notifsClearTimer.restart();
+    }
+    Timer {
+        id: notifsClearTimer
+        interval: 8 * 35 + 300
+        onTriggered: {
+            Notifs.clearHistory();
+            root.notifsClearing = false;
+        }
+    }
     // the bar's devices panel (SerpBar): `qs -c angelos ipc call serp devices`
     signal devicesToggled(string screen)
     IpcHandler {

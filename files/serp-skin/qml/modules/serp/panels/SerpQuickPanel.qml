@@ -367,7 +367,7 @@ Item {
                                 size: Serp.px(11)
                                 dim: true
                             }
-                            onClicked: Notifs.clearHistory()
+                            onClicked: Serp.clearNotifs()  // the cards fly off first
                         }
                     }
                     SText {
