@@ -314,8 +314,16 @@ Singleton {
     }
     // the bar's tray orb opens / gathers (SerpBar): `qs -c angelos ipc call serp tray`, a key bind
     signal trayToggled(string screen)
+    // the bar's devices panel (SerpBar): `qs -c angelos ipc call serp devices`
+    signal devicesToggled(string screen)
     IpcHandler {
         target: "serp"
+        function devices(): string {
+            if (!root.on)
+                return "the serp skin is off";
+            root.devicesToggled(Niri.focusedOutput);
+            return "ok";
+        }
         function tray(): string {
             if (!root.on)
                 return "the serp skin is off";

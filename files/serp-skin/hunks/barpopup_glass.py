@@ -32,7 +32,7 @@ HUNKS = {
          "            visible: Serp.glassOn\n"
          "            anchors.fill: parent\n"
          "            backdrop: serpPopBack\n"
-         "            radius: parent.radius\n"
+         "            radius: macPanel.radius  // its content item has none (an undefined → double warning)\n"
          "            tintAmount: Math.max(Serp.cfg.glassTint, 0.7)\n"
          "            frost: 10\n"
          "            bezel: Serp.px(10)  // a thin lens edge like the islands: a thick one stretched the wallpaper into bars\n"

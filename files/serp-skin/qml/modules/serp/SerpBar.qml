@@ -874,6 +874,65 @@ PanelWindow {
                     }
                 }
             }
+            // the charge of the things on the desk (services/Peripherals, Settings → Devices → Device
+            // charge, as the classic bar's ampoules): a capsule a device, its icon beside it, the number
+            // as the settings say; the panel names them all. A right click asks the devices now
+            SButton {
+                id: devBtn
+                readonly property var devs: Config.ready && Config.peripherals.show ? Peripherals.onBar : []
+                visible: devs.length > 0
+                anchors.verticalCenter: parent.verticalCenter
+                active: devPop.visible
+                Row {
+                    spacing: Serp.px(8)
+                    Repeater {
+                        model: devBtn.devs
+                        Row {
+                            id: dev
+                            required property var modelData
+                            readonly property string pc: Config.peripherals.percent
+                            readonly property bool number: pc === "always" || (pc === "low" && (dev.modelData.level !== "ok" || dev.modelData.charging))
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: Serp.px(4)
+                            SerpDeviceGlyph {
+                                visible: Config.peripherals.glyphs
+                                anchors.verticalCenter: parent.verticalCenter
+                                kind: dev.modelData.kind
+                                size: Serp.px(14)
+                                color: Qt.alpha(Serp.text, dev.modelData.asleep ? 0.5 : 0.9)
+                            }
+                            SerpCharge {
+                                anchors.verticalCenter: parent.verticalCenter
+                                percent: dev.modelData.percent
+                                level: dev.modelData.level
+                                charging: dev.modelData.charging
+                                asleep: dev.modelData.asleep
+                            }
+                            SText {
+                                visible: dev.number
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: dev.modelData.percent + "%"
+                                size: Serp.px(11)
+                                bold: true
+                                color: dev.modelData.level === "veryLow" && !dev.modelData.charging ? Serp.red : Serp.text
+                            }
+                        }
+                    }
+                }
+                onClicked: m => {
+                    if (m.button === Qt.RightButton)
+                        Peripherals.refresh();
+                    else
+                        devPop.toggle();
+                }
+            }
+            Connections {
+                target: Serp
+                function onDevicesToggled(screen) {
+                    if (screen === win.screenName && devBtn.visible)
+                        devPop.toggle();
+                }
+            }
             Sep {
                 visible: SystemTray.items.values.length > 0
             }
@@ -1001,6 +1060,98 @@ PanelWindow {
         id: trayMenu
         anchorItem: rightIsland
         above: false
+    }
+
+    // the devices' panel: every one with its name, the charge large, how it stands
+    BarPopup {
+        id: devPop
+        panelId: "peripherals"
+        anchorItem: devBtn
+        above: false
+        title: I18n.t("Заряд устройств", "Device charge")
+        icon: "battery"
+        contentWidth: Serp.px(330)
+        contentHeight: devList.implicitHeight + Serp.px(8)
+        Column {
+            id: devList
+            width: parent.width
+            spacing: Serp.px(10)
+            Repeater {
+                model: Peripherals.shown
+                Row {
+                    id: drow
+                    required property var modelData
+                    width: devList.width
+                    spacing: Serp.px(12)
+                    Rectangle {
+                        width: Serp.px(40)
+                        height: width
+                        radius: width / 2
+                        color: Qt.alpha(Serp.text, 0.07)
+                        SerpDeviceGlyph {
+                            anchors.centerIn: parent
+                            kind: drow.modelData.kind
+                            size: Serp.px(20)
+                            color: Serp.text
+                        }
+                    }
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: drow.width - Serp.px(52)
+                        spacing: Serp.px(5)
+                        Item {
+                            width: parent.width
+                            height: nameText.implicitHeight
+                            SText {
+                                id: nameText
+                                width: parent.width - pctText.implicitWidth - Serp.px(8)
+                                text: drow.modelData.name
+                                size: Serp.px(12.5)
+                                bold: true
+                            }
+                            SText {
+                                id: pctText
+                                anchors.right: parent.right
+                                text: drow.modelData.percent + "%"
+                                size: Serp.px(12.5)
+                                bold: true
+                                color: drow.modelData.level === "veryLow" && !drow.modelData.charging ? Serp.red : Serp.text
+                            }
+                        }
+                        SerpCharge {
+                            w: parent.width - Serp.px(4)
+                            h: Serp.px(9)
+                            percent: drow.modelData.percent
+                            level: drow.modelData.level
+                            charging: drow.modelData.charging
+                            asleep: drow.modelData.asleep
+                        }
+                        SText {
+                            text: Peripherals.kindLabel(drow.modelData.kind) + (drow.modelData.charging ? I18n.t(" · заряжается", " · charging") : drow.modelData.asleep ? I18n.t(" · спит, последний заряд", " · asleep, last charge") : "")
+                            size: Serp.px(10.5)
+                            color: Serp.subtext
+                        }
+                    }
+                }
+            }
+            SButton {
+                anchors.right: parent.right
+                Row {
+                    spacing: Serp.px(5)
+                    SIcon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: "refresh-cw"
+                        size: Serp.px(12)
+                    }
+                    SText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: I18n.t("Спросить устройства", "Ask the devices")
+                        size: Serp.px(11)
+                    }
+                }
+                onClicked: Peripherals.refresh()
+            }
+        }
     }
 
     // a press on the bar closes the classic popups (tray menus) the way the classic bar does
