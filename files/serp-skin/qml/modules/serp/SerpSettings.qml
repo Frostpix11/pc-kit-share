@@ -20,7 +20,7 @@ PanelWindow {
         origin: Qt.point(0, 0)
     }
 
-    readonly property var pages: ["welcome", "theme", "bar", "dock", "widgets", "about"]
+    readonly property var pages: ["welcome", "theme", "bar", "dock", "widgets", "kit", "about"]
     readonly property string page: pages.indexOf(Serp.settingsPage) >= 0 ? Serp.settingsPage : "theme"
     property bool built: false
     Component.onCompleted: built = true
@@ -196,6 +196,8 @@ PanelWindow {
                         return pDock;
                     case "widgets":
                         return pWidgets;
+                    case "kit":
+                        return pKit;
                     case "about":
                         return pAbout;
                     default:
@@ -245,6 +247,10 @@ PanelWindow {
     Component {
         id: pWidgets
         PageWidgets {}
+    }
+    Component {
+        id: pKit
+        PageKit {}
     }
     Component {
         id: pAbout

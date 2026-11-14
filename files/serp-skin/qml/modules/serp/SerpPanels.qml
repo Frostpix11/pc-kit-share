@@ -202,6 +202,13 @@ PanelWindow {
                 "x": win.width - Serp.px(440) - edge * 2,
                 "from": "top"
             },
+            // pc-kit (SerpKitPanel): under the bar's shield, as wide as it reads well
+            "kit": {
+                "w": Math.min(win.width - edge * 4, Serp.px(860)),
+                "h": Math.min(win.height - top - edge, Serp.px(760)),
+                "x": win.width - Math.min(win.width - edge * 4, Serp.px(860)) - edge * 2,
+                "from": "top"
+            },
             "calendar": {
                 "w": Math.min(win.width - edge * 4, Serp.px(940)),
                 "h": Serp.px(380),
@@ -296,6 +303,14 @@ PanelWindow {
             anchors.fill: parent
             active: win.shown === "eq" && box.visible
             sourceComponent: SerpEqPanel {
+                screenName: win.screenName
+                progress: win.progress
+            }
+        }
+        Loader {
+            anchors.fill: parent
+            active: win.shown === "kit" && box.visible
+            sourceComponent: SerpKitPanel {
                 screenName: win.screenName
                 progress: win.progress
             }

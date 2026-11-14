@@ -3,6 +3,10 @@
 
   kit                 = kit status
   kit status          what is on, what slipped off, what doesn't fit the author's code any more
+  kit status|doctor --json   the same as one JSON object (for the serp panel)
+  kit inventory       JSON: every piece (shell patches, niri, satellite, plugins) with the proof
+                      against the author's files (~/AngelOS-Dotfiles) and its git history
+  kit diff ID         JSON: one piece's own changes, file by file
   kit doctor          status + the system around it (niri/satellite builds, explicit sync,
                       game mode, GPU clocks, groups, recorders, plugins)
   kit apply [NAME…]   put on what is off (all by default); one shell restart for the lot
@@ -210,7 +214,11 @@ def restart_shell():
     subprocess.run([str(P / "restart-shell.sh")], capture_output=True)
 
 
-def do_apply(names, after_update=False) -> int:
+def notify(title, body):
+    subprocess.run(["notify-send", "-a", "pc-kit", "-i", "security-high", title, body], capture_output=True)
+
+
+def do_apply(names, after_update=False, tell=False) -> int:
     if after_update:
         # angelOS's updater writes files for a while: wait until it is gone, then a moment more
         t0 = time.time()
@@ -246,6 +254,11 @@ def do_apply(names, after_update=False) -> int:
         msg = (f"встало заново: {', '.join(done)}" if done else "") + \
               (("\nНЕ встало: " + ", ".join(n for n, _ in failed) + " — kit doctor") if failed else "")
         subprocess.run(["notify-send", "-a", "pc-kit", "pc-kit после обновления angelOS", msg.strip()], capture_output=True)
+    if tell and not after_update:   # asked from the serp panel (detached): the answer as a notification
+        if failed:
+            notify("pc-kit: не встало", ", ".join(n for n, _ in failed) + " — " + " | ".join(failed[0][1])[:200])
+        else:
+            notify("pc-kit", "включено: " + (", ".join(done) or ", ".join(names) + " (уже было)"))
     if not todo or (not done and not failed):
         print("all patches already on")
     return 1 if failed else 0
@@ -328,8 +341,13 @@ def checks():
     add("ok" if st == "enabled" else "bad", "celestia-wake.service (EasyEffects after sleep)", st)
     add("ok" if (BIN / "kitty").exists() else "bad", "kitty wrapper (no explicit sync: it hung after sleep)")
     # Celestia's face
-    same = run(["diff", "-rq", "--exclude=face.frag", "--exclude=__pycache__", str(KIT / "files/plugins/celestia"), str(HOME / ".config/angelos/plugins/celestia")])
-    add("ok" if same.returncode == 0 else "warn", "plugin celestia = pc-kit", "" if same.returncode == 0 else "copy it again and `angelos restart`")
+    # the installed copy against pc-kit's; what serp-skin changes in it on purpose (her face in the
+    # skin's look) doesn't count — inventory undoes those hunks first (2026-11-14: a false warning)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import inventory
+    pst, pnote = inventory.plugin_state(sys.modules[__name__], inventory.Prover(sys.modules[__name__]), "celestia",
+                                        KIT / "files/plugins/celestia", HOME / ".config/angelos/plugins/celestia")
+    add("ok" if pst == "on" else "warn", "plugin celestia = pc-kit", "" if pst == "on" else pnote + " — copy it again and `angelos restart`")
     hooks = read(HOME / ".claude/settings.json")
     add("ok" if "celestia-hook" in hooks and "hooks/pulse.py" in hooks else "warn", "Claude hooks for her moods (pulse + celestia-hook)")
     add("ok" if re.search(r"^AutoEnable=false", read("/etc/bluetooth/main.conf"), re.M) else "warn", "Bluetooth stays off after sleep (AutoEnable=false)")
@@ -401,6 +419,26 @@ def cmd_doctor() -> int:
     return 1 if bad else 0
 
 
+def as_json(with_system: bool) -> int:
+    """the same as status/doctor, for the shell (serp «pc-kit» panel): one JSON object on stdout"""
+    off = disabled()
+    patches = []
+    for p, state, note in patch_states():
+        patches.append({"name": p.name, "desc": p.desc, "kind": type(p).__name__, "state": state,
+                        "note": note, "disabled": p.name in off,
+                        "files": [str(f) for f in watch_paths(p)]})
+    bad = sum(1 for x in patches if x["state"] != "on" and not x["disabled"])
+    system = []
+    if with_system:
+        for state, label, note in checks():
+            system.append({"state": state, "label": label, "note": note})
+        bad += sum(1 for x in system if x["state"] == "bad")
+    warn = sum(1 for x in system if x["state"] == "warn")
+    print(json.dumps({"time": int(time.time()), "bad": bad, "warn": warn,
+                      "patches": patches, "system": system}, ensure_ascii=False))
+    return 1 if bad else 0
+
+
 def cmd_watch_files():
     seen = []
     for p in PATCHES:
@@ -428,6 +466,20 @@ def cmd_install_watcher():
 def main():
     a = sys.argv[1:]
     cmd = a[0] if a else "status"
+    if cmd == "inventory":
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import inventory
+        print(json.dumps(inventory.build(sys.modules[__name__]), ensure_ascii=False))
+        return
+    if cmd == "diff":
+        if len(a) < 2:
+            sys.exit("kit diff ID (patch:NAME | niri:00NN | satellite:00NN | audit:~/path)")
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import inventory
+        print(json.dumps(inventory.diff_json(sys.modules[__name__], a[1]), ensure_ascii=False))
+        return
+    if cmd in ("status", "doctor") and "--json" in a:
+        sys.exit(as_json(cmd == "doctor"))
     if cmd == "status":
         sys.exit(cmd_status())
     if cmd == "doctor":
@@ -441,14 +493,18 @@ def main():
         unknown = [n for n in names if n not in BY]
         if unknown:
             sys.exit(f"unknown: {', '.join(unknown)} (kit list)")
-        sys.exit(do_apply(names, after_update="--after-update" in a))
+        sys.exit(do_apply(names, after_update="--after-update" in a, tell="--notify" in a))
     if cmd == "revert":
-        if len(a) != 2 or a[1] not in BY:
+        names = [x for x in a[1:] if not x.startswith("--")]
+        if len(names) != 1 or names[0] not in BY:
             sys.exit("kit revert NAME (kit list)")
-        p = BY[a[1]]
+        p = BY[names[0]]
         set_disabled(p.name, True)
         r = p.revert()
         print((r.stdout + r.stderr).strip())
+        if "--notify" in a:
+            st, _ = p.check()
+            notify("pc-kit", f"снято: {p.name} (как у автора)" if st != "on" else f"не снялось: {p.name} — {(r.stdout + r.stderr).strip()[-160:]}")
         for cmd2 in p.after:
             subprocess.run(cmd2, shell=True)
         if p.restarts_shell:

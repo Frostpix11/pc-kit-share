@@ -281,6 +281,8 @@ for _f in sorted((HERE / "hunks").glob("*.py")):
 # whole files and directories that are ours
 NEW = {
     "services/Serp.qml": HERE / "qml/services/Serp.qml",
+    # pc-kit's doctor in the skin (kit doctor --json): the bar's shield, its panel, settings → pc-kit
+    "services/SerpKit.qml": HERE / "qml/services/SerpKit.qml",
     "modules/serp": HERE / "qml/modules/serp",
     "widgets/SerpSkinPreview.qml": HERE / "qml/widgets/SerpSkinPreview.qml",
     "modules/settings/views/SerpView.qml": HERE / "qml/settings-views/SerpView.qml",

@@ -1027,6 +1027,29 @@ PanelWindow {
                 }
                 onClicked: Serp.togglePanel("quick", win.screenName)
             }
+            // pc-kit (services/SerpKit): a shield always there — quiet when all is good, amber / red
+            // when something slipped; it opens the pc-kit panel (panels/SerpKitPanel). A right click checks again
+            SButton {
+                id: kitBtn
+                anchors.verticalCenter: parent.verticalCenter
+                active: Serp.isOpen("kit", win.screenName)
+                SIcon {
+                    name: "shield"
+                    color: SerpKit.state === "bad" || SerpKit.state === "warn" ? SerpKit.tone(SerpKit.state) : Qt.alpha(Serp.text, SerpKit.state === "ok" ? 0.7 : 0.4)
+                    opacity: SerpKit.busy ? 0.55 : 1
+                    Behavior on opacity {
+                        NumberAnimation {
+                            duration: Serp.normal
+                        }
+                    }
+                }
+                onClicked: m => {
+                    if (m.button === Qt.RightButton)
+                        SerpKit.refresh();
+                    else
+                        Serp.togglePanel("kit", win.screenName);
+                }
+            }
             SButton {
                 anchors.verticalCenter: parent.verticalCenter
                 active: Serp.isOpen("notifs", win.screenName)

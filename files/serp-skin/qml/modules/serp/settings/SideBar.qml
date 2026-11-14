@@ -63,6 +63,11 @@ Rectangle {
             "sep": true
         },
         {
+            "id": "kit",
+            "icon": "shield",
+            "label": "pc-kit"
+        },
+        {
             "id": "about",
             "icon": "info",
             "label": "О скине"

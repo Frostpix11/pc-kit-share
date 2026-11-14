@@ -7,6 +7,7 @@ var pages = {
     "bar": "Панель",
     "dock": "Док",
     "widgets": "Виджеты",
+    "kit": "pc-kit",
     "about": "О скине"
 };
 
@@ -32,6 +33,8 @@ var items = [
     { page: "theme", key: "glass", title: "Жидкое стекло", words: "стекло glass прозрачность преломление liquid" },
     { page: "widgets", key: "more", title: "Виджеты рабочего стола", words: "виджет часы рабочий стол" },
     { page: "widgets", key: "more", title: "Остальные виджеты", words: "визуализатор angelos виджеты" },
+    { page: "kit", key: "summary", title: "pc-kit: состояние", words: "kit doctor доктор патчи проверка здоровье" },
+    { page: "kit", key: "open", title: "Панель pc-kit", words: "kit патчи патч plugin плагины niri satellite apply revert слетел система аудит" },
     { page: "about", key: "about", title: "О скине", words: "ilyamiro лицензия agpl github" },
     { page: "about", key: "version", title: "Версия", words: "версия 0.1" }
 ];
