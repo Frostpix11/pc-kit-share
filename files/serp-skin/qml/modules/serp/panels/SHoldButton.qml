@@ -35,15 +35,27 @@ Item {
                 const c = getContext("2d");
                 c.reset();
                 const h = height * (1 - hb.level), w = width, a = Math.min(4, height * 0.06);
+                const wave = x => h + Math.sin(x / w * Math.PI * 2 + phase) * a;
+                // inside the plate's own rounded shape: the plate's clip is only its square box,
+                // and the liquid's bottom corners stood out past the rounding
+                c.beginPath();
+                c.roundedRect(0, 0, w, height, plate.radius, plate.radius);
+                c.clip();
                 c.fillStyle = Qt.alpha(hb.tint, 0.85);
                 c.beginPath();
                 c.moveTo(0, height);
-                for (let x = 0; x <= w; x += 4)
-                    c.lineTo(x, h + Math.sin(x / w * Math.PI * 2 + phase) * a);
+                // in 4 px steps, then the very edge: the steps stopped short of a width that isn't a
+                // multiple of 4, and a straight line ran from there to the corner (a gap on the
+                // right of the wide power buttons, 2026-11-14)
+                for (let x = 0; x < w; x += 4)
+                    c.lineTo(x, wave(x));
+                c.lineTo(w, wave(w));
                 c.lineTo(w, height);
                 c.closePath();
                 c.fill();
             }
+            onWidthChanged: requestPaint()
+            onHeightChanged: requestPaint()
             NumberAnimation on phase {
                 running: liquid.visible
                 from: 0
