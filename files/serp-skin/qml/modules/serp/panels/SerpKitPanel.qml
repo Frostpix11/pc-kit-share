@@ -16,7 +16,7 @@ Item {
     property string screenName: ""
     property real progress: 1
 
-    implicitWidth: Serp.px(860)
+    implicitWidth: Serp.px(980)
     implicitHeight: Serp.px(660)
 
     readonly property bool still: Motion.still
@@ -398,7 +398,7 @@ Item {
         Column {
             anchors.left: orb.right
             anchors.leftMargin: Serp.px(12)
-            anchors.right: again.left
+            anchors.right: modeSeg.left
             anchors.rightMargin: Serp.px(10)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Serp.px(2)
@@ -418,6 +418,83 @@ Item {
                     const s = SerpKit.state === "bad" ? "надо поправить: " + SerpKit.bad : SerpKit.state === "warn" ? "есть замечания: " + SerpKit.warn : SerpKit.state === "ok" ? "всё работает" : "проверяю…";
                     const a = SerpKit.inv ? " · angelOS " + SerpKit.inv.author.rev : "";
                     return s + a + " · проверено " + SerpKit.ago();
+                }
+            }
+        }
+        // Дерево | Список
+        Rectangle {
+            id: modeSeg
+            anchors.right: again.left
+            anchors.rightMargin: Serp.px(8)
+            anchors.verticalCenter: parent.verticalCenter
+            width: Serp.px(176)
+            height: Serp.px(30)
+            radius: height / 2
+            color: Serp.surface0
+            border.width: 1
+            border.color: Qt.tint(Serp.base, Qt.alpha(Serp.text, 0.12))
+            readonly property bool isTree: SerpKit.mode === "tree"
+            Rectangle {
+                id: modePill
+                x: Serp.px(3) + (modeSeg.isTree ? 0 : (modeSeg.width - Serp.px(6)) / 2)
+                y: Serp.px(3)
+                width: (modeSeg.width - Serp.px(6)) / 2
+                height: modeSeg.height - Serp.px(6)
+                radius: height / 2
+                color: Serp.accent
+                Behavior on x {
+                    NumberAnimation {
+                        duration: root.still ? 0 : Serp.slow
+                        easing.type: Easing.OutQuint
+                    }
+                }
+            }
+            Row {
+                anchors.fill: parent
+                anchors.margins: Serp.px(3)
+                Repeater {
+                    model: [
+                        {
+                            "id": "tree",
+                            "icon": "network",
+                            "label": "Дерево"
+                        },
+                        {
+                            "id": "list",
+                            "icon": "layers",
+                            "label": "Список"
+                        }
+                    ]
+                    Item {
+                        id: mItem
+                        required property var modelData
+                        required property int index
+                        readonly property bool on: Math.abs(modePill.x - Serp.px(3) - index * (modeSeg.width - Serp.px(6)) / 2) < (modeSeg.width - Serp.px(6)) / 4
+                        width: (modeSeg.width - Serp.px(6)) / 2
+                        height: parent.height
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: Serp.px(5)
+                            SIcon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: mItem.modelData.icon
+                                size: Serp.px(12)
+                                color: mItem.on ? Serp.onAccent : Serp.subtext0
+                            }
+                            SText {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: mItem.modelData.label
+                                size: Serp.px(10.5)
+                                bold: true
+                                color: mItem.on ? Serp.onAccent : Serp.subtext0
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: SerpKit.mode = mItem.modelData.id
+                        }
+                    }
                 }
             }
         }
@@ -655,7 +732,14 @@ Item {
         id: listBox
         x: root.pad
         y: seg.y + seg.height + Serp.px(12)
-        width: Serp.px(300)
+        readonly property bool isTree: SerpKit.mode === "tree"
+        width: isTree ? Serp.px(610) : Serp.px(300)
+        Behavior on width {
+            NumberAnimation {
+                duration: root.still ? 0 : 420
+                easing.type: Easing.OutQuint
+            }
+        }
         height: parent.height - y - root.pad
         radius: Serp.radiusSmall
         color: Qt.alpha(Serp.surface0, 0.45)
@@ -672,8 +756,57 @@ Item {
             text: SerpKit.invBusy || !SerpKit.inv ? "Собираю…" : "Пусто"
             dim: true
         }
+        // the tree (only built while chosen: its lines and sparks cost nothing in the list)
+        Loader {
+            id: treeLoader
+            anchors.fill: parent
+            anchors.margins: Serp.px(4)
+            active: listBox.isTree
+            opacity: listBox.isTree ? 1 : 0
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: root.still ? 0 : Serp.normal
+                }
+            }
+            sourceComponent: SerpKitTree {
+                groups: {
+                    SerpKit.inv;
+                    SerpKit.system;
+                    return root.tabs.map(t => ({
+                                "id": t.id,
+                                "icon": t.icon,
+                                "label": t.label,
+                                "items": root.itemsOf(t.id)
+                            }));
+                }
+                selGroup: root.tab
+                selId: root.cur ? root.cur.id : ""
+                toneOf: it => root.tone(root.norm(it))
+                badOf: it => {
+                    const s = root.norm(it);
+                    return s === "bad";
+                }
+                rootTone: root.tone(SerpKit.state === "unknown" ? "info" : SerpKit.state)
+                rootIcon: SerpKit.state === "bad" ? "circle-x" : SerpKit.state === "ok" ? "check" : "shield"
+                rootLabel: "angelOS"
+                rootSub: SerpKit.inv ? SerpKit.inv.author.rev : ""
+                busy: SerpKit.busy || SerpKit.invBusy
+                still: root.still
+                onPickGroup: gid => root.tab = gid
+                onPickItem: (gid, item) => {
+                    root.tab = gid;
+                    root.pick(item);
+                }
+                onRootClicked: {
+                    SerpKit.refresh();
+                    SerpKit.diffs = ({});
+                    SerpKit.loadInventory(true);
+                }
+            }
+        }
         ListView {
             id: list
+            visible: !listBox.isTree
             anchors.fill: parent
             anchors.margins: Serp.px(6)
             spacing: Serp.px(2)

@@ -199,6 +199,8 @@ Singleton {
     // the panel (panels/SerpKitPanel): `qs -c angelos ipc call serpkit panel`, a key bind; `show`
     // opens it on one piece (showReq, read by the panel when it is built and while it is open)
     property var showReq: null
+    // the panel's left side: "tree" (SerpKitTree) | "list"; kept while the shell runs
+    property string mode: "tree"
     IpcHandler {
         target: "serpkit"
         function panel(): string {
@@ -221,6 +223,12 @@ Singleton {
             if (Serp.panel !== "kit")
                 Serp.openPanel("kit", Niri.focusedOutput || Shell.primaryName);
             return "ok";
+        }
+        // the panel's left side: tree | list
+        function mode(m: string): string {
+            if (m === "tree" || m === "list")
+                root.mode = m;
+            return root.mode;
         }
         function refresh(): string {
             root.refresh();
