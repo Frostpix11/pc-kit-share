@@ -52,14 +52,15 @@ def _load(path: Path, name: str):
     """import a patch script as a module (they all keep their work under `if __name__ == "__main__"`)"""
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    old_argv, old_path = sys.argv, list(sys.path)
+    old_argv, old_path, old_bc = sys.argv, list(sys.path), sys.dont_write_bytecode
     sys.argv = [str(path)]
+    sys.dont_write_bytecode = True   # no __pycache__ left in the patch dirs (the panel asks every 10 min)
     sys.path.insert(0, str(path.parent))
     try:
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             spec.loader.exec_module(mod)
     finally:
-        sys.argv, sys.path[:] = old_argv, old_path
+        sys.argv, sys.path[:], sys.dont_write_bytecode = old_argv, old_path, old_bc
     return mod
 
 

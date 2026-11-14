@@ -29,6 +29,8 @@ import sys
 import time
 from pathlib import Path
 
+sys.dont_write_bytecode = True   # kit imports inventory.py and the patch scripts: no __pycache__ beside them
+
 HOME = Path.home()
 KIT = Path(os.environ.get("PC_KIT") or Path(__file__).resolve().parent.parent)   # pc-kit/kit/kit.py
 P = KIT / "files/patches"
